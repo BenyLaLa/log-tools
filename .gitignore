@@ -1,0 +1,43 @@
+# Python runtime, virtual environment and generated files
+.python/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.test-tmp*/
+build/
+dist/
+
+# Downloaded datasets, archived logs and investigation output
+data/
+downloads/
+archives/
+reports/
+*.log
+*.log.*
+*.part
+*.gz
+*.zip
+*.7z
+*.tar
+*.tgz
+*.bz2
+*.xz
+# Deliberately fabricated demo/test fixture
+!/examples/logs/order.log
+
+# Local server settings and credentials
+config.json
+config.local.json
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+known_hosts
+known_hosts.*
+id_rsa
+id_ed25519
+id_ecdsa

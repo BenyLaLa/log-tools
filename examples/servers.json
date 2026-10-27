@@ -1,0 +1,29 @@
+{
+  "sftp-example": {
+    "protocol": "sftp",
+    "host": "logs.example.internal",
+    "port": 22,
+    "username": "log_reader",
+    "private_key": "D:/keys/log_reader",
+    "known_hosts": "D:/keys/known_hosts",
+    "root": "/logs",
+    "timeout_seconds": 30
+  },
+  "ftp-example": {
+    "protocol": "ftp",
+    "host": "logs.example.internal",
+    "port": 21,
+    "username": "log_reader",
+    "password_env": "LOG_FTP_PASSWORD",
+    "root": "/logs",
+    "allow_plain_ftp": true
+  },
+  "ftps-example": {
+    "protocol": "ftps",
+    "host": "logs.example.internal",
+    "port": 21,
+    "username": "log_reader",
+    "password_env": "LOG_FTPS_PASSWORD",
+    "root": "/logs"
+  }
+}

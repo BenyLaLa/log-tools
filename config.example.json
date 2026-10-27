@@ -1,0 +1,12 @@
+{
+  "cache_dir": "./data",
+  "servers": {},
+  "local_roots": ["./examples/logs"],
+  "log_encoding": "utf-8-sig",
+  "timezone_offset": "+08:00",
+  "max_download_bytes": 1073741824,
+  "max_files": 200,
+  "scan_max_bytes": 67108864,
+  "scan_timeout_seconds": 20,
+  "redact": true
+}

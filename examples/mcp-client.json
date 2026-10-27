@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "log-tools": {
+      "command": "D:\\project\\company\\log-tools\\.venv\\Scripts\\python.exe",
+      "args": [
+        "-m", "log_tools", "--config",
+        "D:\\project\\company\\log-tools\\config.json"
+      ]
+    }
+  }
+}

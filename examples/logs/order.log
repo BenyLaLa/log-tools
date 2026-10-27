@@ -1,0 +1,8 @@
+2026-10-22 10:01:00.000 INFO traceId=demo-001 POST /orders started
+2026-10-22 10:01:00.020 INFO traceId=demo-001 calling inventory service
+2026-10-22 10:01:03.021 ERROR traceId=demo-001 inventory request timed out after 3000ms
+java.net.SocketTimeoutException: Read timed out
+    at example.InventoryClient.reserve(InventoryClient.java:42)
+2026-10-22 10:01:03.030 ERROR traceId=demo-001 POST /orders failed status=503
+2026-10-22 10:05:00.000 INFO traceId=demo-002 POST /orders status=200
+2026-10-22 11:00:00.000 WARN token=demo-sensitive-value expired
