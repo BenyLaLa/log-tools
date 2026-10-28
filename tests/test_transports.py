@@ -181,7 +181,7 @@ def sftp_server(tmp_path, monkeypatch):
             transport.set_subsystem_handler("sftp", paramiko.SFTPServer, TestSftp, root=root)
             try:
                 transport.start_server(server=AuthServer())
-            except (EOFError, ConnectionResetError, paramiko.SSHException):
+            except (EOFError, ConnectionError, paramiko.SSHException):
                 transport.close()
 
     thread = threading.Thread(target=accept, daemon=True)

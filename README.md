@@ -1,5 +1,15 @@
 # 日志排查 MCP · Python 第一版
 
+## 分享与新机器安装
+
+发送方运行 `pack.cmd`，把 `dist/` 下生成的 ZIP 和 SHA256 文件交给接收方。接收方完整解压后运行 `setup.cmd`，自动准备 Python 3.13 x64、虚拟环境和依赖，再按提示配置 SFTP。需要 Windows 10/11 x64；分享包不包含日志、真实配置或凭据。
+
+接收方不能访问外网时，发送方运行 `pack.cmd -Offline`，生成包含 Python 安装器和全部依赖的离线包。接收方仍运行 `setup.cmd`，会自动使用本地文件；完全断网时可先运行 `setup.cmd -Offline -SkipConfigure`，之后接通公司网络再配置 SFTP。
+
+后续添加服务器可运行 `configure.cmd`。详细准备事项、命令与故障处理见 [一键打包与新机器配置](docs/distribution.md)；Linux 专用账号的准备流程见 [SFTP 账号配置模板](docs/sftp-account-setup.md)。
+
+## 功能与使用
+
 通过 SFTP、FTP 或显式 FTPS 下载指定目录的日志，保存为本地数据集，再让 AI 按关键词、时间、级别或 traceId 查询。提供标准 stdio MCP 接口；AI 负责结合日志判断问题，工具负责取数并保留证据位置。
 
 常用排查已整理为可复用客户端 `query.cmd`，通过真正的 MCP stdio 会话调用工具，不必每次编写脚本。详见 [常用查询操作](docs/queries.md)。

@@ -9,6 +9,11 @@ __pycache__/
 .test-tmp*/
 build/
 dist/
+.setup-cache/
+offline/
+.setup-backups/
+.setup-*.tmp
+mcp-client.local.json
 
 # Downloaded datasets, archived logs and investigation output
 data/
