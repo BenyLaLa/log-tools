@@ -26,8 +26,7 @@ def test_remote_traversal(path):
 def test_config_guards_and_relative_paths(tmp_path):
     with pytest.raises(ValueError):
         ServerConfig(protocol="ftp", host="localhost", username="a", root="/logs")
-    with pytest.raises(ValueError):
-        ServerConfig(protocol="sftp", host="localhost", username="a", root="/logs")
+    assert ServerConfig(protocol="sftp", host="localhost", username="a", root="/logs").known_hosts is None
     config = tmp_path / "config.json"
     config.write_text(json.dumps({"cache_dir": "cache", "local_roots": ["logs"]}))
     settings = load_settings(config)

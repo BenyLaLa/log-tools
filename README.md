@@ -1,5 +1,7 @@
 # 日志排查 MCP · Python 第一版
 
+图形安装版：双击 `LogTools-Setup-0.2.3-x64.exe` 离线安装，可手动新增、编辑项目名称/服务器地址/端口，也可“一键导入服务器配置”带入多个日志项目，之后在界面设置自己的凭据。无需 known_hosts、主机指纹或管理员确认。详见 [图形版使用与配置导入](docs/desktop.md)。
+
 ## 分享与新机器安装
 
 发送方运行 `pack.cmd`，把 `dist/` 下生成的 ZIP 和 SHA256 文件交给接收方。接收方完整解压后运行 `setup.cmd`，自动准备 Python 3.13 x64、虚拟环境和依赖，再按提示配置 SFTP。需要 Windows 10/11 x64；分享包不包含日志、真实配置或凭据。
@@ -7,6 +9,8 @@
 接收方不能访问外网时，发送方运行 `pack.cmd -Offline`，生成包含 Python 安装器和全部依赖的离线包。接收方仍运行 `setup.cmd`，会自动使用本地文件；完全断网时可先运行 `setup.cmd -Offline -SkipConfigure`，之后接通公司网络再配置 SFTP。
 
 后续添加服务器可运行 `configure.cmd`。详细准备事项、命令与故障处理见 [一键打包与新机器配置](docs/distribution.md)；Linux 专用账号的准备流程见 [SFTP 账号配置模板](docs/sftp-account-setup.md)。
+
+0.2.3 新增历史日志自动发现、按项目配置扫描范围和目录树预览。默认包含根目录及 error/warn/info/debug，跳过 target/.git；扫描只读取文件信息，按需选择日志下载。旧配置自动使用默认扫描规则。
 
 ## 功能与使用
 
@@ -64,7 +68,6 @@ SFTP 示例：
       "port": 22,
       "username": "log_reader",
       "private_key": "D:/keys/log_reader",
-      "known_hosts": "D:/keys/known_hosts",
       "root": "/logs"
     }
   },
@@ -74,7 +77,7 @@ SFTP 示例：
 }
 ```
 
-`known_hosts` 必须提前由管理员提供，或经过可信渠道核对主机密钥指纹后配置。遇到未知主机或密钥变化会拒绝连接，不自动信任。非 22 端口的条目使用 `[host]:port` 格式。加密私钥可用 `key_passphrase_env` 指定存放口令的环境变量名。
+SFTP 不校验服务器主机公钥，不需要 `known_hosts` 或管理员确认；旧配置中的 `known_hosts` 字段会被忽略。连接仍加密并验证账号凭据，但不通过公钥识别服务器冒充。加密私钥可用 `key_passphrase_env` 指定存放口令的环境变量名。
 
 如果使用密码认证，删除 `private_key`，设置 `password_env`。密码只保存在 MCP 进程环境中，例如在启动该进程前设置 `LOG_FTP_PASSWORD`；不要把真实密码写入聊天、示例配置或提交记录。桌面 MCP 客户端需要在其启动环境或受保护的环境变量配置中提供这些变量；其他终端设置的变量不一定被已启动的客户端继承。
 
@@ -118,7 +121,7 @@ D:\project\company\log-tools\.venv\Scripts\python.exe
 | 工具 | 用途 |
 | --- | --- |
 | `list_servers` | 查看已配置别名及允许的目录 |
-| `list_remote_logs` | 列举单个目录的普通文件，支持 glob 文件名筛选 |
+| `list_remote_logs` | 发现当前及历史日志，支持配置目录范围、递归深度、glob 筛选和快照分页 |
 | `download_logs` | 后台下载；返回任务/数据集 ID |
 | `get_download_status` | 查看进度、文件 ID、SHA256、来源及失败原因 |
 | `list_datasets` | 查看已保存的数据集，重启后可继续查询 |
@@ -137,7 +140,7 @@ data/datasets/<dataset_id>/<file_id>.log
 
 文件名使用生成的 UUID，避免远端文件名影响本地路径。下载期间使用 `.part`，只有完成长度校验及下载前后元数据比较后才发布文件。原始文件名、来源、SHA256 和 gzip 标记记录在 manifest 中；即使扩展名为 `.log`，gzip 文件仍保留原始压缩字节。SHA256 用于记录本地文件内容，没有服务端校验值时不代表独立的端到端校验。
 
-下载上限默认 1 GiB/任务、200 文件；2 个下载工作线程，最多同时容纳 4 个未结束任务。`bytes_downloaded` 表示本次任务实际接收的字节，包含随后失败文件已接收的部分。`partial` 表示有成功文件也有失败文件，只能据成功文件分析。进程中断的下载会标记为 `interrupted`，重新发起下载即可；同一个缓存目录只供一个 MCP 服务进程使用。
+下载上限默认 1 GiB/任务、200 文件；2 个下载工作线程，最多同时容纳 4 个未结束任务。`bytes_downloaded` 表示本次任务实际接收的字节，包含随后失败文件已接收的部分。`partial` 表示有成功文件也有失败文件，只能据成功文件分析。进程中断的下载会标记为 `interrupted`，重新发起下载即可；多个新版 MCP 进程通过系统文件锁协调共享缓存。
 
 ## 查询行为与第一版范围
 

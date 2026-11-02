@@ -50,16 +50,7 @@ log-tools-windows-时间戳.zip.sha256
 3. 访问日志服务器所需的 VPN/网络，以及正确的 SSH/SFTP 端口。
 4. 专用只读账号、密码或本机私钥。每个接收者应使用获授权的凭据，分享包不带发送方密码。
 5. SFTP 登录后可见的日志目录，例如 `/sdscmcontract`。服务器宿主机上的 `/home/sdscmcontract` 不一定是 SFTP 内路径。
-6. 管理员从可信终端或控制台给出的服务器主机公钥 SHA256 指纹，用于首次连接核对。
-
-管理员可在已信任的服务器终端查询对应主机公钥指纹，例如：
-
-```bash
-sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256
-sudo ssh-keygen -lf /etc/ssh/ssh_host_rsa_key.pub -E sha256
-```
-
-向导使用 SSH 协商选中的主机公钥，通常为 Ed25519；如果指纹不同，先让管理员核实算法和地址，不要直接把向导显示的陌生指纹当作可信值。
+不需要 `known_hosts`、服务器主机指纹或管理员确认。此版本不校验服务器主机身份，仍验证账号凭据并加密传输。
 
 服务器账号尚未准备好时，把 `docs/sftp-account-setup.md` 的信息表交给管理员填写，再生成并执行对应服务器配置步骤。
 
@@ -91,7 +82,7 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_rsa_key.pub -E sha256
 2. 没有兼容解释器时，普通包从官网下载安装器，离线包使用内置安装器，以当前用户身份安装 Python 3.13.17。默认安装到 `%LOCALAPPDATA%\Programs\Python\Python313`，不改系统 PATH。该固定版本对应项目原先验证过的环境，并不表示它始终是最新版本。
 3. 在解压目录新建 `.venv`；安装 `requirements.lock.txt` 锁定的依赖及本项目，并检查依赖一致性。普通包的 pip 缓存写入项目 `.setup-cache/pip/`；离线包强制 `--no-index --no-cache-dir`，只从内置 wheels 安装，项目安装关闭构建隔离及依赖下载，不借用发送方缓存。
 4. 缺少 `config.json` 时从模板创建；已有配置则保留。生成匹配本机绝对路径的 `mcp-client.local.json`，已有文件也保留。
-5. 进入 SFTP 配置向导，填写地址、账号、目录、认证方式和可信主机指纹。指纹匹配后才保存主机密钥，随后在本机输入密码或私钥口令。
+5. 进入 SFTP 配置向导，填写地址、账号、目录和认证方式，在本机输入密码或私钥口令；不再核对主机指纹。
 6. 最后通过真实 stdio MCP 会话运行 `check`，确认本地服务能启动。
 
 安装器的自动安装参数依据 [Python Windows 安装说明](https://docs.python.org/3.13/using/windows.html)，固定下载及校验值见 [Python 3.13.17 发布页](https://www.python.org/downloads/release/python-31317/)。
@@ -100,7 +91,7 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_rsa_key.pub -E sha256
 
 首次安装一般不需要管理员权限；组织策略、运行库和证书验证要求以本机实际情况为准。脚本只在启动的 PowerShell 进程使用执行策略参数，不修改系统永久执行策略；受组织策略限制时联系管理员，不需要自行全局放宽策略。
 
-**一键安装不等于零信息输入**：服务器地址、可信指纹、授权凭据仍需接收者自己提供。向导不会默认信任陌生服务器，也不会在服务器执行配置命令。
+**一键安装不等于零信息输入**：服务器地址和授权凭据仍需接收者自己提供。向导不校验服务器主机身份，不会在服务器执行配置命令。
 
 ### 只安装环境，暂不配置服务器
 
@@ -169,8 +160,7 @@ AI 客户端使用本机生成的 `mcp-client.local.json` 中的 `command` 和 `
 | 离线包安装成功，但配置向导连接失败 | 安装环境与访问服务器是两回事；先用 `-SkipConfigure` 安装，接通公司网络/VPN 后再配置 SFTP |
 | 安装窗口结束太快 | 在 PowerShell 中运行脚本查看输出；默认脚本结束前会等待 Enter |
 | 提示已有 Python 目录不可用 | 修复原安装或指定另一个兼容解释器；脚本不会覆盖这个目录 |
-| 主机指纹不匹配 | 向管理员核对地址、端口、实际协商的主机密钥算法及指纹；向导不会保存不匹配的配置或发送密码 |
-| known_hosts 已有不同密钥 | 核实是否发生服务器重装或密钥变更，确认后由管理员指导更新；不要自动清空文件 |
+| 旧配置仍有 known_hosts | 新版忽略该字段，不需修改或删除原文件 |
 | 凭据缺失 | 检查变量名、运行 Windows 用户，以及 MCP 进程是否能获取该变量 |
 | Permission denied | 区分认证失败与目录拒绝；按服务器账号流程检查 ACL、chroot 和 SFTP 可见路径 |
 | 换机器后旧 .venv 无法运行 | 不复制虚拟环境；从分享包解压并重新运行 setup.cmd |

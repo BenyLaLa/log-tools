@@ -21,6 +21,23 @@ def remote_path(value: str, root: str) -> str:
     return result
 
 
+class DiscoverySettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = True
+    history_dirs: list[str] = Field(default_factory=lambda: ["error", "warn", "info", "debug"], max_length=100)
+    max_depth: int = Field(default=3, ge=0, le=10)
+    pattern: str = Field(default="*.log*", min_length=1, max_length=200)
+    exclude_dirs: list[str] = Field(default_factory=lambda: ["target", ".git"], max_length=100)
+    max_entries: int = Field(default=10000, ge=1, le=10000)
+
+    @model_validator(mode="after")
+    def validate_names(self):
+        for name in self.history_dirs + self.exclude_dirs:
+            if not name or name in (".", "..") or any(c in name for c in "/\\") or any(ord(c) < 32 for c in name):
+                raise ValueError("Discovery directories must be single directory names")
+        return self
+
+
 class ServerConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     protocol: Literal["sftp", "ftp", "ftps"] = "sftp"
@@ -28,22 +45,24 @@ class ServerConfig(BaseModel):
     port: int | None = Field(default=None, ge=1, le=65535)
     username: str = Field(min_length=1)
     password_env: str | None = None
+    password_credential: str | None = None
+    credential_group: str = "default"
     private_key: str | None = None
     key_passphrase_env: str | None = None
-    known_hosts: str | None = None
+    key_passphrase_credential: str | None = None
+    known_hosts: str | None = None  # Legacy compatibility only; no longer read.
     ca_file: str | None = None
     root: str
     allow_plain_ftp: bool = False
     timeout_seconds: int = Field(default=30, ge=1, le=300)
     encoding: str = "utf-8"
+    discovery: DiscoverySettings = Field(default_factory=DiscoverySettings)
 
     @model_validator(mode="after")
     def validate_server(self):
         if not self.root.startswith("/"):
             raise ValueError("Server root must be an absolute POSIX path")
         self.root = remote_path(self.root, "/")
-        if self.protocol == "sftp" and not self.known_hosts:
-            raise ValueError("SFTP requires a verified known_hosts file")
         if self.protocol == "ftp" and not self.allow_plain_ftp:
             raise ValueError("Plain FTP requires allow_plain_ftp=true")
         return self
@@ -74,16 +93,23 @@ def load_settings(config_path: str | Path) -> Settings:
     settings.cache_dir = absolute(settings.cache_dir)
     settings.local_roots = [absolute(root) for root in settings.local_roots]
     for server in settings.servers.values():
-        for field in ("private_key", "known_hosts", "ca_file"):
+        for field in ("private_key", "ca_file"):
             if value := getattr(server, field):
                 setattr(server, field, str(absolute(value)))
     return settings
 
 
-def secret(name: str | None) -> str | None:
+def secret(name: str | None, credential: str | None = None) -> str | None:
+    from .credentials import read_credential, windows_environment
+    if credential:
+        value = read_credential(credential)
+        if value:
+            return value
+        if not name:
+            raise ValueError("Required Windows credential is missing; open LogTools settings")
     if name is None:
         return None
-    value = os.environ.get(name)
+    value = os.environ.get(name) or windows_environment(name)
     if not value:
         raise ValueError(f"Required credential environment variable is missing: {name}")
     return value

@@ -5,7 +5,6 @@
     "port": 22,
     "username": "log_reader",
     "private_key": "D:/keys/log_reader",
-    "known_hosts": "D:/keys/known_hosts",
     "root": "/logs",
     "timeout_seconds": 30
   },

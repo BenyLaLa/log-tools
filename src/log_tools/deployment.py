@@ -1,16 +1,13 @@
-"""Windows distribution packaging and an interactive, host-key-verified SFTP wizard."""
+"""Windows distribution packaging and an interactive, SFTP account wizard."""
 
 from __future__ import annotations
 
 import argparse
-import base64
 import getpass
 import hashlib
-import hmac
 import json
 import os
 import re
-import socket
 import struct
 import subprocess
 import sys
@@ -31,6 +28,7 @@ PACKAGE_FILES = (
     "src/log_tools/client.py", "src/log_tools/config.py", "src/log_tools/deployment.py",
     "src/log_tools/query.py", "src/log_tools/remote.py", "src/log_tools/server.py",
     "src/log_tools/service.py", "src/log_tools/store.py",
+    "src/log_tools/credentials.py", "src/log_tools/leases.py",
 )
 
 PYTHON_VERSION = "3.13.17"
@@ -233,37 +231,6 @@ def initialize(root):
         print("保留已有 mcp-client.local.json；移动项目后请检查其中的绝对路径。")
 
 
-def fingerprint(key):
-    digest = hashlib.sha256(key.asbytes()).digest()
-    return "SHA256:" + base64.b64encode(digest).decode("ascii").rstrip("=")
-
-
-def read_remote_key(host, port):
-    import paramiko
-
-    # SSH handshake only: no authentication or remote command execution.
-    with socket.create_connection((host, port), timeout=15) as connection:
-        with paramiko.Transport(connection) as transport:
-            transport.start_client(timeout=15)
-            return transport.get_remote_server_key()
-
-
-def verified_host_keys(path, host, port, key, expected_fingerprint):
-    import paramiko
-
-    actual = fingerprint(key)
-    if not hmac.compare_digest(actual, expected_fingerprint.strip()):
-        raise ValueError(f"主机指纹不匹配；没有保存配置或发送凭据。服务器本次返回：{actual}")
-    host_name = host if port == 22 else f"[{host}]:{port}"
-    hosts = paramiko.HostKeys()
-    if path.exists():
-        hosts.load(str(path))
-    if hosts.lookup(host_name) and not hosts.check(host_name, key):
-        raise ValueError("known_hosts 已有不同的主机密钥；请先向管理员核实变更，向导不会覆盖。")
-    hosts.add(host_name, key.get_name(), key)
-    return hosts
-
-
 def save_user_secret(name, value):
     if os.name != "nt":
         raise ValueError("此向导的用户环境变量写入仅支持 Windows。")
@@ -300,7 +267,7 @@ def configure(root):
 
     initialize(root)
     print("\nSFTP 配置向导。可反复运行 configure.cmd 添加多个项目；不会修改 Linux 服务器。")
-    print("需要：地址/端口、只读账号、SFTP 内日志路径，以及管理员通过可信渠道提供的 SHA256 主机指纹。")
+    print("需要：地址/端口、账号、SFTP 内日志路径和登录凭据。不需要 known_hosts 或主机指纹。")
     print("密码和私钥口令只在本机隐藏输入；Windows 用户环境变量不是加密密码库。")
     if not yes("现在添加或更新一个服务器", True):
         return
@@ -321,7 +288,7 @@ def configure(root):
         auth = ask("认证方式：1=密码，2=私钥", "1")
         server = {
             "protocol": "sftp", "host": host, "port": port, "username": username,
-            "root": remote_root, "known_hosts": "./known_hosts", "timeout_seconds": 30,
+            "root": remote_root, "timeout_seconds": 30,
         }
         env_name = None
         if auth == "1":
@@ -341,13 +308,6 @@ def configure(root):
             raise ValueError("认证方式必须选择 1 或 2。")
         document.setdefault("servers", {})[alias] = server
         Settings.model_validate(document)
-        expected = ask("管理员通过可信渠道提供的主机指纹（SHA256:...）")
-        if not re.fullmatch(r"SHA256:[A-Za-z0-9+/]{43}", expected):
-            raise ValueError("需要完整的 SHA256 主机指纹，不能跳过验证。")
-        hosts_path = root / "known_hosts"
-        original_hosts = hosts_path.read_bytes() if hosts_path.exists() else None
-        hosts = verified_host_keys(hosts_path, host, port, read_remote_key(host, port), expected)
-        print(f"主机指纹匹配：{host}:{port}；目录 {remote_root}；账号 {username}。")
         if not yes("保存此服务器配置", True):
             return
         secret_value = None
@@ -359,22 +319,12 @@ def configure(root):
                 raise ValueError("凭据不能为空；没有保存本次配置。")
         if config_path.read_bytes() != original:
             raise ValueError("config.json 已被其他程序修改，请重试。")
-        if (hosts_path.read_bytes() if hosts_path.exists() else None) != original_hosts:
-            raise ValueError("known_hosts 已被其他程序修改，请重试。")
-        # Key was authenticated against the independently supplied fingerprint first.
-        descriptor, temp_name = tempfile.mkstemp(prefix=".setup-hosts-", suffix=".tmp", dir=root)
-        os.close(descriptor)
-        try:
-            hosts.save(temp_name)
-            os.replace(temp_name, hosts_path)
-        finally:
-            Path(temp_name).unlink(missing_ok=True)
         if secret_value is not None:
             save_user_secret(env_name, secret_value)
             secret_value = None
         write_json(config_path, document, expected=original, backup=True)
         print(f"已保存 {alias}。下一步执行：.\\query.cmd files --server {alias}")
-        print("刚才只验证了主机身份，尚未验证账号登录与日志读取权限。")
+        print("配置已保存，尚未验证账号登录与日志读取权限。")
         if not yes("继续添加另一个项目"):
             return
 

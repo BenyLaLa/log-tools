@@ -6,9 +6,7 @@ import subprocess
 import zipfile
 from pathlib import Path
 
-import paramiko
 import pytest
-from test_transports import sftp_server  # noqa: F401
 
 from log_tools import deployment
 
@@ -82,22 +80,6 @@ def test_configuration_backup_and_concurrent_change_guard(tmp_path):
     assert json.loads(path.read_text())["max_files"] == 9
 
 
-def test_host_key_requires_independent_fingerprint_and_preserves_changed_host(tmp_path):
-    key = paramiko.RSAKey.generate(1024)
-    other = paramiko.RSAKey.generate(1024)
-    path = tmp_path / "known_hosts"
-    with pytest.raises(ValueError, match="指纹"):
-        deployment.verified_host_keys(path, "example.test", 2222, key, deployment.fingerprint(other))
-    assert not path.exists()
-    hosts = deployment.verified_host_keys(path, "example.test", 2222, key, deployment.fingerprint(key))
-    assert hosts.check("[example.test]:2222", key)
-    hosts.save(str(path))
-    original = path.read_bytes()
-    with pytest.raises(ValueError, match="已有不同"):
-        deployment.verified_host_keys(path, "example.test", 2222, other, deployment.fingerprint(other))
-    assert path.read_bytes() == original
-
-
 def test_env_name_cannot_overwrite_system_variables():
     for name in ("PATH", "HOME", "PYTHONPATH", "LOG_BAD=VALUE", "LOG_BAD NAME"):
         with pytest.raises(ValueError):
@@ -105,46 +87,45 @@ def test_env_name_cannot_overwrite_system_variables():
     deployment.validate_env_name("LOG_READER_PASSWORD")
 
 
-def test_wizard_local_handshake_persists_only_references(
-    tmp_path, monkeypatch, capsys, sftp_server  # noqa: F811
-):
+def test_wizard_without_host_verification_persists_only_references(tmp_path, monkeypatch, capsys):
     root = tmp_path / "wizard"
     root.mkdir()
     (root / "config.example.json").write_text('{"servers": {}}')
-    trusted = paramiko.HostKeys(sftp_server.known_hosts)
-    key = next(iter(trusted[f"[127.0.0.1]:{sftp_server.port}"].values()))
     answers = iter([
-        "y", "local-test", "127.0.0.1", str(sftp_server.port), "reader", "/logs",
-        "1", "LOG_TEST_SECRET", deployment.fingerprint(key), "y", "y", "n",
+        "y", "local-test", "example.test", "22", "reader", "/logs",
+        "1", "LOG_TEST_SECRET", "y", "y", "n",
     ])
-    monkeypatch.setattr("builtins.input", lambda _: next(answers))
+    prompts = []
+    def answer(prompt):
+        prompts.append(prompt)
+        return next(answers)
+    monkeypatch.setattr("builtins.input", answer)
+    monkeypatch.setattr("socket.create_connection", lambda *a, **k: pytest.fail("Configuration must not contact a host"))
     monkeypatch.setattr(deployment.getpass, "getpass", lambda _: "secret-only-in-memory")
     stored = {}
     monkeypatch.setattr(deployment, "save_user_secret", lambda name, value: stored.update({name: value}))
     deployment.configure(root)
     config = json.loads((root / "config.json").read_text(encoding="utf-8"))
     assert config["servers"]["local-test"]["password_env"] == "LOG_TEST_SECRET"
+    assert "known_hosts" not in config["servers"]["local-test"]
     assert stored == {"LOG_TEST_SECRET": "secret-only-in-memory"}
-    assert paramiko.HostKeys(str(root / "known_hosts")).check(f"[127.0.0.1]:{sftp_server.port}", key)
+    assert not (root / "known_hosts").exists()
+    assert not any("指纹" in prompt or "管理员" in prompt for prompt in prompts)
     assert "secret-only-in-memory" not in capsys.readouterr().out
-    assert all(b"secret-only-in-memory" not in p.read_bytes() for p in root.rglob("*") if p.is_file())
+    assert all(b"secret-only-in-memory" not in f.read_bytes() for f in root.rglob("*") if f.is_file())
 
 
-def test_wizard_mismatch_does_not_prompt_for_password_or_change_config(tmp_path, monkeypatch):
+def test_wizard_cancel_preserves_existing_configuration(tmp_path, monkeypatch):
     (tmp_path / "config.example.json").write_text('{"servers": {}}')
     deployment.initialize(tmp_path)
     original = (tmp_path / "config.json").read_bytes()
-    key = paramiko.RSAKey.generate(1024)
-    other = paramiko.RSAKey.generate(1024)
     answers = iter([
         "y", "local-test", "example.test", "22", "reader", "/logs", "1",
-        "LOG_TEST_SECRET", deployment.fingerprint(other),
+        "LOG_TEST_SECRET", "n",
     ])
     monkeypatch.setattr("builtins.input", lambda _: next(answers))
-    monkeypatch.setattr(deployment, "read_remote_key", lambda *_: key)
-    monkeypatch.setattr(deployment.getpass, "getpass", lambda _: pytest.fail("Must not ask for secret"))
-    with pytest.raises(ValueError, match="指纹"):
-        deployment.configure(tmp_path)
+    monkeypatch.setattr(deployment.getpass, "getpass", lambda _: pytest.fail("Cancelled"))
+    deployment.configure(tmp_path)
     assert (tmp_path / "config.json").read_bytes() == original
     assert not (tmp_path / "known_hosts").exists()
 

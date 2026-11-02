@@ -16,16 +16,18 @@ class SftpRemote:
     def __init__(self, config: ServerConfig):
         self.config = config
         self.client = paramiko.SSHClient()
-        self.client.load_host_keys(config.known_hosts)
-        self.client.set_missing_host_key_policy(paramiko.RejectPolicy())
+        # Requested mode: accept the presented host key for this connection.
+        # Do not load system/user host keys or set a persistence filename.
+        # Password/private-key authentication and path restrictions still apply.
+        self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         try:
             self.client.connect(
                 hostname=config.host,
                 port=config.port or 22,
                 username=config.username,
-                password=secret(config.password_env),
+                password=secret(config.password_env, config.password_credential),
                 key_filename=config.private_key,
-                passphrase=secret(config.key_passphrase_env),
+                passphrase=secret(config.key_passphrase_env, config.key_passphrase_credential),
                 look_for_keys=False,
                 allow_agent=False,
                 timeout=config.timeout_seconds,
@@ -45,11 +47,25 @@ class SftpRemote:
         remote_path(canonical, self.root)
         return canonical
 
-    def listing(self, directory):
+    def entries(self, directory):
+        directory = remote_path(directory, self.config.root)
+        # Refuse symlinks in explicitly requested paths as well as discovered children.
+        relative = posixpath.relpath(directory, self.config.root)
+        current = self.config.root
+        for component in ([] if relative == "." else relative.split("/")):
+            current = posixpath.join(current, component)
+            if stat.S_ISLNK(self.sftp.lstat(current).st_mode):
+                raise ValueError("Symlink directories are not scanned")
         directory = self.checked(directory)
         for item in self.sftp.listdir_iter(directory):
-            if stat.S_ISREG(item.st_mode):
-                yield {"name": item.filename, "size": item.st_size, "mtime": item.st_mtime}
+            mode = item.st_mode or 0
+            kind = "file" if stat.S_ISREG(mode) else "directory" if stat.S_ISDIR(mode) else "symlink" if stat.S_ISLNK(mode) else "other"
+            yield {"name": item.filename, "size": item.st_size, "mtime": item.st_mtime, "type": kind}
+
+    def listing(self, directory):
+        for item in self.entries(directory):
+            if item["type"] == "file":
+                yield {key: value for key, value in item.items() if key != "type"}
 
     def metadata(self, path):
         item = self.sftp.lstat(self.checked(path))
@@ -86,13 +102,17 @@ class FtpRemote:
             self.client.close()
             raise
 
-    def listing(self, directory):
+    def entries(self, directory):
         directory = remote_path(directory, self.config.root)
-        # MLSD provides reliable file types; do not parse ambiguous LIST text.
+        # Only explicit MLSD file/dir types are traversed; links/unknowns are skipped.
         for name, facts in self.client.mlsd(directory, facts=["type", "size", "modify"]):
-            if facts.get("type") == "file":
-                modified = facts.get("modify")
-                yield {"name": name, "size": int(facts["size"]), "mtime": modified}
+            kind = {"file": "file", "dir": "directory"}.get(facts.get("type"), "other")
+            yield {"name": name, "size": int(facts.get("size", 0)), "mtime": facts.get("modify"), "type": kind}
+
+    def listing(self, directory):
+        for item in self.entries(directory):
+            if item["type"] == "file":
+                yield {key: value for key, value in item.items() if key != "type"}
 
     def metadata(self, path):
         path = remote_path(path, self.config.root)

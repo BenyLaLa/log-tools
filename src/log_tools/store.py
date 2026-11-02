@@ -7,6 +7,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .leases import Lease
+
 
 def now():
     return datetime.now(timezone.utc).isoformat()
@@ -46,7 +48,13 @@ class Store:
             temp.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), "utf-8")
             os.replace(temp, directory / "manifest.json")
 
-    def new(self, source, encoding):
+    def lease(self, dataset_id):
+        directory = self.directory(dataset_id)
+        directory.mkdir(parents=True, exist_ok=True)
+        lease = Lease(directory / ".job-lease")
+        return lease if lease.acquire() else None
+
+    def new(self, source, encoding, *, reserve=False):
         manifest = {
             "dataset_id": str(uuid.uuid4()),
             "source": source,
@@ -57,8 +65,16 @@ class Store:
             "errors": [],
             "bytes_downloaded": 0,
         }
-        self.save(manifest)
-        return manifest
+        lease = self.lease(manifest["dataset_id"]) if reserve else None
+        if reserve and lease is None:
+            raise RuntimeError("Could not reserve new job")
+        try:
+            self.save(manifest)
+        except BaseException:
+            if lease:
+                lease.close()
+            raise
+        return (manifest, lease) if reserve else manifest
 
     def file_path(self, dataset_id, file_id):
         path = (self.directory(dataset_id) / (identifier(file_id) + ".log")).resolve()

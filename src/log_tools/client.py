@@ -86,6 +86,9 @@ def connection(args):
         {},
         None,
     )
+    if getattr(sys, "frozen", False):
+        command = str(Path(sys.executable).with_name("log-tools-mcp.exe"))
+        command_args = ["--config", str(config)]
     if args.client_config:
         client_path = Path(args.client_config).resolve()
         document = json.loads(client_path.read_text(encoding="utf-8-sig"))
@@ -164,16 +167,22 @@ async def dispatch(session, args, statuses):
     if action == "servers":
         return await call(session, "list_servers", {})
     if action == "files":
-        return await call(
+        result = await call(
             session,
             "list_remote_logs",
             {
                 "server": args.server,
                 "directory": args.directory,
                 "pattern": args.pattern,
+                "recursive": args.recursive, "max_depth": args.max_depth,
                 "limit": args.limit,
             },
         )
+        while result.get("next_cursor"):
+            page = await call(session, "list_remote_logs", {"server": args.server, "cursor": result["next_cursor"], "limit": args.limit})
+            result["files"].extend(page["files"])
+            result.update(next_cursor=page["next_cursor"], has_more=page["has_more"], truncated=page["truncated"])
+        return result
     if action == "datasets":
         return await call(session, "list_datasets", {"limit": args.limit})
     if action == "status":
@@ -225,10 +234,19 @@ async def dispatch(session, args, statuses):
                     "server": args.server,
                     "directory": args.directory,
                     "pattern": args.pattern,
+                    "recursive": args.recursive, "max_depth": args.max_depth,
                     "limit": 1000,
                 },
             )
             files = listing["files"]
+            if listing.get("incomplete"):
+                raise ClientError("Discovery incomplete; inspect files output/warnings, adjust scan scope or limits, then retry")
+            if listing.get("total_files", len(files)) > args.max_files:
+                raise ClientError("Too many matching files; narrow --pattern/--directory or raise --max-files")
+            while listing.get("next_cursor"):
+                page = await call(session, "list_remote_logs", {"server": args.server, "cursor": listing["next_cursor"], "limit": 1000})
+                files.extend(page["files"])
+                listing.update(next_cursor=page["next_cursor"], truncated=page["truncated"])
             if listing.get("truncated") or len(files) > args.max_files:
                 raise ClientError(
                     "Too many matching files; narrow --pattern/--directory or raise --max-files"
@@ -315,7 +333,9 @@ def parser():
     files = sub.add_parser("files", help="List remote logs; this also checks remote authentication")
     files.add_argument("--server", required=True)
     files.add_argument("--directory", default=".")
-    files.add_argument("--pattern", default="*.log*")
+    files.add_argument("--pattern", default=None)
+    files.add_argument("--recursive", action=argparse.BooleanOptionalAction, default=None)
+    files.add_argument("--max-depth", type=bounded(0, 10))
     files.add_argument("--limit", type=bounded(1, 1000), default=100)
     datasets = sub.add_parser("datasets", help="List cached snapshots")
     datasets.add_argument("--limit", type=bounded(1, 200), default=50)
@@ -354,6 +374,9 @@ def parser():
     source.add_argument("--dataset")
     source.add_argument("--server")
     latest.add_argument("--directory", default=".")
+    latest.add_argument("--recursive", action=argparse.BooleanOptionalAction, default=False,
+                        help="Include historical directories; default checks current logs only")
+    latest.add_argument("--max-depth", type=bounded(0, 10))
     latest.add_argument("--pattern", default="*error*.log*")
     latest.add_argument("--max-files", type=bounded(1, 200), default=10)
     latest.add_argument("--limit", type=bounded(1, 20), default=1)

@@ -1,6 +1,7 @@
 # Python runtime, virtual environment and generated files
 .python/
 .venv/
+.venv-desktop/
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -14,6 +15,8 @@ offline/
 .setup-backups/
 .setup-*.tmp
 mcp-client.local.json
+*.logtools.json
+.settings-lease
 
 # Downloaded datasets, archived logs and investigation output
 data/

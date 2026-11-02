@@ -35,7 +35,7 @@ cd D:\project\company\log-tools
 .\query.cmd latest --server dev-sdscm --directory /home/sdscm-dev --pattern "log_error.log" --limit 3 --before 3 --after 50
 ```
 
-默认最多选择 10 个文件；超过上限或远端列表不完整时拒绝自动挑选，要求缩小 `--pattern`，防止遗漏真正最新的事件。目录查询不递归。`--max-files` 可调整文件数；`--max-bytes` 指定本次下载上限，未指定时使用服务配置的上限。
+默认最多选择 10 个文件；超过上限或远端列表不完整时拒绝自动挑选，要求缩小 `--pattern`，防止遗漏真正最新的事件。`latest` 默认不递归，加 `--recursive` 可包含历史子目录。`--max-files` 可调整文件数；`--max-bytes` 指定本次下载上限，未指定时使用服务配置的上限。
 
 `latest_errors` 对所选数据集做一次有预算的扫描，按日志事件时间倒序排序，包含 ERROR/FATAL/CRITICAL，不将异常堆栈尾行当作新事件。返回最新 N 条、前后文、文件 ID、行号和数据集 ID。没有独立时间戳的错误无法准确排序，扫描超限、部分数据集等情况会明确返回 `warnings` / `incomplete`，不能宣称已确定最新一条。
 
@@ -59,7 +59,7 @@ cd D:\project\company\log-tools
 
 返回 `dataset_id` 后可对这组文件统一搜索。默认等待上限 120 秒，可使用 `--wait-timeout 300`。每次运行是独立 MCP 子进程：超时或中断关闭后，它的后台下载不会由这个客户端继续托管；根据返回的 ID 检查状态，必要时重试。`partial`、`failed` 会保留失败信息并以非零状态退出。
 
-本版本不跨任务去重；同一个缓存目录请只运行一个 MCP 服务进程，避免其他实例把进行中的任务判断为中断。
+本版本不跨任务去重；多个新版 MCP 进程可共享缓存，使用系统文件锁识别活跃下载。不要与尚未包含该修复的旧版进程同时操作缓存。
 
 ## 5. 按关键词、时间、级别或 traceId 搜索
 
@@ -114,3 +114,17 @@ cd D:\project\company\log-tools
 3. `search` 按时间、线程关键字、traceId 或单据号关联。
 4. `context` 补全异常堆栈和业务步骤。
 5. 区分日志直接证明的原因与待验证推测；只有需要交付时才另存结果。
+
+
+## 历史日志发现（0.2.3）
+
+`files` 默认使用项目扫描设置，自动发现当前及历史日志，并在同一次命令会话中取完所有分页。`--limit` 是每页大小，不再限制最终输出总数。查看 `incomplete` 和 `warnings` 判断是否有漏扫；按配置排除的目录不会下载。
+
+```powershell
+.\query.cmd files --server dev-sdscmcontract
+.\query.cmd files --server dev-sdscmcontract --no-recursive
+.\query.cmd files --server dev-sdscmcontract --directory error --recursive --max-depth 3
+.\query.cmd latest --server dev-sdscmcontract --directory error --recursive --pattern "*.log*" --max-files 50
+```
+
+`latest --server` 为控制下载量，默认只查指定目录的当前日志；加 `--recursive` 才包含历史子目录。它会拒绝对未完整扫描的结果或超过 `--max-files` 的候选集合声称找到了最新异常。先用 `files` 检查范围，再按目录或文件名缩小候选；文件名时间不是日志事件时间。MCP 工具本身默认按项目设置发现历史。

@@ -123,8 +123,7 @@ chroot 根目录建议：/srv/sftp/log_reader
 Python/虚拟环境及 query.cmd 是否可用：
 当前 config.json 的 servers 配置：    # 脱敏后提供，删除任何真实凭据
 已有服务器别名是否需要保留：
-known_hosts 文件路径：D:\project\company\log-tools\known_hosts
-是否已有通过可信渠道核对的服务器主机密钥指纹：
+客户端不需要 known_hosts 或服务器主机指纹。
 希望使用当前进程环境变量还是 Windows 用户环境变量：
 客户端是否与设置环境变量时使用同一个 Windows 用户：
 ```
@@ -209,7 +208,7 @@ findmnt -rn -o TARGET,SOURCE,FSTYPE,OPTIONS
 | 7 | 配置开机挂载及轮转/部署后的权限维护 | 重启后仍有效；新日志可读，新非日志内容不意外开放 |
 | 8 | 添加专用账号的 SSH 限制 | SFTP 只读、chroot 生效、禁 Shell 和转发 |
 | 9 | 检查语法与该账号最终生效的配置，再 reload | 保留管理员会话，新的管理员连接和 SFTP 连接均验证成功 |
-| 10 | 核对主机密钥，配置 Windows known_hosts 和认证 | 主机身份核对通过，凭据不进入 Git |
+| 10 | 配置 Windows 账号认证 | 登录与日志读取验证通过，凭据不进入 Git |
 | 11 | 合并 MCP 服务器配置，实际列目录、下载和查询 | 三个项目逐一验证，不能只用 check 作为远端成功依据 |
 | 12 | 给出回滚、常见问题和日常维护命令 | 仅撤销本次变更，不删除业务日志或已有配置 |
 
@@ -231,7 +230,7 @@ findmnt -rn -o TARGET,SOURCE,FSTYPE,OPTIONS
 
 ### 4.4 Windows 和 MCP 要求
 
-- `known_hosts` 中放服务器主机公钥；指纹从已信任的管理员连接或控制台获取。`ssh-keyscan` 的采集结果本身不能证明主机可信，必须比对；非 22 端口条目使用 `[host]:port`。
+- 新版客户端不校验服务器主机公钥，不需要 `known_hosts` 或管理员确认指纹；账号密码/私钥认证仍然需要。
 - 密码认证使用 `password_env` 引用环境变量名；密钥认证使用 `private_key`，需要口令时再设置 `key_passphrase_env`。
 - `root` 使用 SFTP 登录后看到的路径，例如 `/sdscmcontract`，而不是宿主机路径 `/home/sdscmcontract` 或 `/srv/sftp/log_reader/sdscmcontract`。
 - 保留已有 `config.json` 配置项，合并服务器条目；`local_roots` 是允许导入的 Windows 本地日志目录，不负责限制远端账号。
@@ -276,7 +275,7 @@ MCP 的目录查询不递归。验证历史目录时，应分别指定 `/sdscmco
 2. 使用专用账号、chroot、只读 bind mount、ACL 和只读 internal-sftp。
 3. 只允许下载指定日志，禁止读取 target/JAR、配置和其他非日志内容。
 4. 禁止 Shell、远端命令、写操作及转发，保留管理员正常登录能力。
-5. 同时给出 Windows known_hosts、环境变量或密钥、MCP config.json 和 query.cmd 验证步骤。
+5. 同时给出 Windows 环境变量或密钥、MCP config.json 和 query.cmd 验证步骤。
 
 请先核对信息是否足够。未知关键项请给出针对性的只读查询命令，不要猜系统版本、账号状态、现有 SSH 规则或轮转行为；已提供的信息不要反复询问。
 

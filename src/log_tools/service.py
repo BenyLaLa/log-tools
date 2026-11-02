@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fnmatch
 import hashlib
 import os
 import threading
@@ -10,8 +9,9 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .config import remote_path
+from .discovery import Discovery
 from .query import Query
-from .remote import connect, modification_time, valid_child
+from .remote import connect, modification_time
 from .store import Store, now
 
 
@@ -21,6 +21,7 @@ class LogService:
         self.store = Store(settings.cache_dir)
         self.query = Query(settings, self.store)
         self.connector = connector
+        self.discovery = Discovery()
         self.pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="log-download")
         self.jobs = {}
         self.imports = set()
@@ -44,40 +45,10 @@ class LogService:
             ]
         }
 
-    def list_remote(self, server, directory=".", pattern="*.log*", limit=100):
-        if not 1 <= limit <= 1000 or len(pattern) > 200:
-            raise ValueError("limit must be 1..1000 and pattern at most 200 characters")
-        config = self.server(server)
-        directory = remote_path(directory, config.root)
-        rows, truncated, scanned = [], False, 0
-        with self.connector(config) as client:
-            for item in client.listing(directory):
-                scanned += 1
-                if scanned > 10000:
-                    truncated = True
-                    break
-                name = item["name"]
-                path = valid_child(directory, name, config.root)
-                if not fnmatch.fnmatchcase(name, pattern):
-                    continue
-                if len(rows) == limit:
-                    truncated = True
-                    break
-                rows.append(
-                    {
-                        "remote_path": path,
-                        "name": name,
-                        "size": item["size"],
-                        "modified_at": modification_time(item["mtime"]),
-                    }
-                )
-        return {
-            "server": server,
-            "directory": directory,
-            "files": rows,
-            "truncated": truncated,
-            "recursive": False,
-        }
+    def list_remote(self, server, directory=".", pattern=None, limit=100,
+                    recursive=None, max_depth=None, cursor=None):
+        return self.discovery.list(self.connector, self.server(server), server,
+                                   directory, pattern, limit, recursive, max_depth, cursor)
 
     def download(self, server, paths, max_bytes=None):
         config = self.server(server)
@@ -91,9 +62,15 @@ class LogService:
             self.jobs = {key: future for key, future in self.jobs.items() if not future.done()}
             if sum(not future.done() for future in self.jobs.values()) >= 4:
                 raise ValueError("Download queue is full; wait for an existing job")
-            manifest = self.store.new(server, self.settings.log_encoding)
+            manifest, lease = self.store.new(server, self.settings.log_encoding, reserve=True)
             job_id = manifest["dataset_id"]
-            self.jobs[job_id] = self.pool.submit(self._download, manifest, config, paths, cap)
+            try:
+                future = self.pool.submit(self._download, manifest, config, paths, cap)
+                future.add_done_callback(lambda _: lease.close())
+                self.jobs[job_id] = future
+            except BaseException:
+                lease.close()
+                raise
         return {"job_id": job_id, "dataset_id": job_id, "status": "queued"}
 
     def _download(self, manifest, config, paths, cap):
@@ -191,15 +168,21 @@ class LogService:
             and manifest["status"] in ("queued", "downloading")
             and (future is None or future.done())
         ):
-            # The worker may have finished after the first read; never overwrite its final state.
-            manifest = self.store.read(job_id)
-            if manifest["status"] not in ("queued", "downloading"):
-                return manifest
-            manifest["status"] = "interrupted"
-            manifest["errors"].append(
-                {"reason": "Process stopped before download finished; retry download"}
-            )
-            self.store.save(manifest)
+            # A different MCP process may own this job. Only recover it after its
+            # OS-held lease becomes available, then re-read under that lease.
+            lease = self.store.lease(job_id)
+            if lease is None:
+                return self.store.read(job_id)
+            try:
+                manifest = self.store.read(job_id)
+                if manifest["status"] in ("queued", "downloading"):
+                    manifest["status"] = "interrupted"
+                    manifest["errors"].append(
+                        {"reason": "Process stopped before download finished; retry download"}
+                    )
+                    self.store.save(manifest)
+            finally:
+                lease.close()
         return manifest
 
     def datasets(self, limit=50):
@@ -229,7 +212,7 @@ class LogService:
         if total > self.settings.max_download_bytes:
             raise ValueError("Import size exceeds configured download limit")
         with self.lock:
-            manifest = self.store.new("local-import", self.settings.log_encoding)
+            manifest, lease = self.store.new("local-import", self.settings.log_encoding, reserve=True)
             self.imports.add(manifest["dataset_id"])
         manifest["status"] = "downloading"
         try:
@@ -274,7 +257,10 @@ class LogService:
             raise
         finally:
             manifest["finished_at"] = now()
-            self.store.save(manifest)
-            with self.lock:
-                self.imports.discard(manifest["dataset_id"])
+            try:
+                self.store.save(manifest)
+            finally:
+                lease.close()
+                with self.lock:
+                    self.imports.discard(manifest["dataset_id"])
         return manifest

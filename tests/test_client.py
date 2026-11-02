@@ -167,6 +167,8 @@ def test_remote_latest_refuses_incomplete_listing_or_download(monkeypatch):
         server="dev",
         directory=".",
         pattern="*error*",
+        recursive=False,
+        max_depth=None,
         max_files=10,
         max_bytes=1000,
         wait_timeout=2,
@@ -190,3 +192,34 @@ def test_remote_latest_refuses_incomplete_listing_or_download(monkeypatch):
 
     monkeypatch.setattr(client, "call", partial)
     assert asyncio.run(client.dispatch(None, args, []))["ok"] is False
+
+
+def test_files_collects_discovery_pages_in_one_session(monkeypatch):
+    args = client.parser().parse_args(["files", "--server", "dev", "--limit", "1"])
+    calls = []
+
+    async def pages(session, name, arguments):
+        calls.append(arguments)
+        if arguments.get("cursor"):
+            return {"files": [{"name": "old.log.gz"}], "next_cursor": None,
+                    "has_more": False, "truncated": False}
+        return {"files": [{"name": "current.log"}], "next_cursor": "cursor",
+                "has_more": True, "truncated": True, "incomplete": False}
+
+    monkeypatch.setattr(client, "call", pages)
+    result = asyncio.run(client.dispatch(None, args, []))
+    assert len(result["files"]) == 2 and not result["truncated"]
+    assert calls[1] == {"server": "dev", "cursor": "cursor", "limit": 1}
+
+
+def test_latest_refuses_incomplete_discovery_before_downloading(monkeypatch):
+    args = client.parser().parse_args(["latest", "--server", "dev", "--recursive"])
+
+    async def incomplete(session, name, arguments):
+        assert name == "list_remote_logs"
+        assert arguments["recursive"] is True
+        return {"files": [{"remote_path": "/error.log"}], "incomplete": True}
+
+    monkeypatch.setattr(client, "call", incomplete)
+    with pytest.raises(client.ClientError, match="Discovery incomplete"):
+        asyncio.run(client.dispatch(None, args, []))

@@ -132,7 +132,7 @@ class TestSftp(paramiko.SFTPServerInterface):
     def list_folder(self, path):
         result = []
         for item in self.path(path).iterdir():
-            attr = paramiko.SFTPAttributes.from_stat(item.stat())
+            attr = paramiko.SFTPAttributes.from_stat(item.lstat())
             attr.filename = item.name
             result.append(attr)
         return result
@@ -224,11 +224,26 @@ def test_real_sftp_and_root_escape(service, sftp_server):
         connection.close()
 
 
-def test_sftp_unknown_host_rejected(sftp_server, tmp_path):
-    hosts = tmp_path / "empty-hosts"
-    hosts.write_text("")
-    sftp_server.known_hosts = str(hosts)
-    with pytest.raises(paramiko.SSHException, match="known_hosts"):
+@pytest.mark.parametrize("legacy", ["absent", "missing-file", "wrong-key"])
+def test_sftp_accepts_host_without_loading_or_saving_keys(sftp_server, tmp_path, legacy):
+    hosts = tmp_path / "legacy-hosts"
+    if legacy == "wrong-key":
+        other = paramiko.RSAKey.generate(1024)
+        hosts.write_text(f"[127.0.0.1]:{sftp_server.port} {other.get_name()} {other.get_base64()}\n")
+    original = hosts.read_bytes() if hosts.exists() else None
+    sftp_server.known_hosts = None if legacy == "absent" else str(hosts)
+    connection = SftpRemote(sftp_server)
+    try:
+        assert list(connection.listing("/logs"))[0]["name"] == "app.log"
+    finally:
+        connection.close()
+    assert (hosts.read_bytes() if hosts.exists() else None) == original
+
+
+def test_sftp_still_rejects_incorrect_account_password(sftp_server, monkeypatch):
+    sftp_server.known_hosts = None
+    monkeypatch.setenv("TEST_LOG_PASSWORD", "incorrect-password")
+    with pytest.raises(paramiko.AuthenticationException):
         SftpRemote(sftp_server)
 
 
@@ -258,3 +273,39 @@ def test_ftps_requires_certificate_and_data_encryption(monkeypatch):
     monkeypatch.setattr("log_tools.remote.ftplib.FTP_TLS", FakeTls)
     FtpRemote(ServerConfig(protocol="ftps", host="example", username="u", root="/logs")).close()
     assert calls == ["connect", "login", "encrypted-data"]
+
+
+@pytest.mark.parametrize("transport", ["ftp_server", "sftp_server"])
+def test_real_nested_history_download_and_query(service, request, tmp_path, transport):
+    import gzip
+
+    config = request.getfixturevalue(transport)
+    root = tmp_path / ("remote" if transport == "ftp_server" else "sftp/logs")
+    (root / "error/2026").mkdir(parents=True)
+    (root / "target").mkdir()
+    (root / "target/app.jar").write_bytes(b"not a log")
+    (root / "target/hidden.log").write_text("must not be discovered")
+    with gzip.open(root / "error/2026/old.log.gz", "wb") as stream:
+        stream.write(b"2026-10-29 08:00:00 ERROR archived-sample\n")
+    service.settings.servers["test"] = config
+    first = service.list_remote("test", limit=1)
+    assert first["total_files"] == 2 and first["has_more"]
+    second = service.list_remote("test", cursor=first["next_cursor"], limit=1)
+    assert not second["truncated"]
+    files = first["files"] + second["files"]
+    archive = next(row["remote_path"] for row in files if row["name"].endswith(".gz"))
+    job = service.download("test", [archive])
+    service.jobs[job["job_id"]].result(timeout=10)
+    assert service.status(job["job_id"])["status"] == "completed"
+    assert service.query.search(job["dataset_id"], query="archived-sample")["matches"]
+
+
+def test_sftp_explicit_symlink_directory_is_not_followed():
+    import stat
+    from types import SimpleNamespace
+
+    remote = object.__new__(SftpRemote)
+    remote.config = ServerConfig(host="example.test", username="reader", root="/logs")
+    remote.sftp = SimpleNamespace(lstat=lambda path: SimpleNamespace(st_mode=stat.S_IFLNK))
+    with pytest.raises(ValueError, match="Symlink"):
+        list(remote.entries("/logs/link"))

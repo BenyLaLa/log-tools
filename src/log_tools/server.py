@@ -29,6 +29,10 @@ def build_server(settings):
             "A truncated scan is incomplete evidence. Distinguish observed errors from root-cause "
             "hypotheses. Query only relevant fragments; tool results may be sent to a cloud model."
             " Use latest_errors for newest error event headers, then read_log_context for the stack."
+            " Discover historical logs with list_remote_logs; follow next_cursor and check incomplete."
+            " For newest errors start with current logs using recursive=false, then expand to history"
+            " if evidence is insufficient. For date/trace investigations select relevant history and"
+            " levels, verify content timestamps, and state the coverage of every conclusion."
         ),
     )
     read = ToolAnnotations(readOnlyHint=True, destructiveHint=False)
@@ -54,10 +58,20 @@ def build_server(settings):
 
     @mcp.tool(annotations=read, structured_output=True)
     async def list_remote_logs(
-        server: str, directory: str = ".", pattern: str = "*.log*", limit: int = 100
+        server: str, directory: str = ".", pattern: str | None = None, limit: int = 100,
+        recursive: bool | None = None, max_depth: int | None = None, cursor: str | None = None,
     ) -> dict[str, Any]:
-        """List regular files in one allowed directory. Glob pattern; not recursive. Narrow pattern if truncated."""
-        return await call(service.list_remote, server, directory, pattern, limit)
+        """Discover current and historical logs using project discovery settings (default enabled).
+
+        Root scans enter configured history_dirs (error/warn/info/debug by default); an explicit
+        subdirectory scans its own descendants. max_depth is relative to project root (root=0).
+        recursive=false lists one directory. pattern matches basenames, not paths.
+        Follow next_cursor with the same server to page the metadata snapshot (expires in 5 minutes).
+        Other scan arguments are ignored for cursor pages; limit may change. No content is downloaded.
+        Check incomplete/warnings and skipped_directories; truncated also includes remaining pages.
+        File dates/mtime only select candidates; use log content timestamps for conclusions.
+        """
+        return await call(service.list_remote, server, directory, pattern, limit, recursive, max_depth, cursor)
 
     @mcp.tool(annotations=write, structured_output=True)
     async def download_logs(
