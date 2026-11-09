@@ -25,7 +25,7 @@ def test_real_stdio_tool_calls(tmp_path):
             async with ClientSession(reader, writer) as session:
                 await session.initialize()
                 tools = await session.list_tools()
-                assert len(tools.tools) == 10
+                assert len(tools.tools) == 11
                 assert "latest_errors" in {tool.name for tool in tools.tools}
                 imported = await session.call_tool("import_local_logs", {"paths": [str(log)]})
                 assert not imported.isError

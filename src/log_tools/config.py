@@ -80,6 +80,11 @@ class Settings(BaseModel):
     scan_max_bytes: int = Field(default=64 * 1024**2, ge=1, le=2 * 1024**3)
     scan_timeout_seconds: int = Field(default=20, ge=1, le=120)
     redact: bool = True
+    fragment_network_bytes: int = Field(default=64 * 1024**2, ge=1024, le=2 * 1024**3)
+    fragment_file_bytes: int = Field(default=32 * 1024**2, ge=1024, le=2 * 1024**3)
+    fragment_output_bytes: int = Field(default=2 * 1024**2, ge=1024, le=16 * 1024**2)
+    fragment_scan_bytes: int = Field(default=256 * 1024**2, ge=1024, le=2 * 1024**3)
+    fragment_timeout_seconds: int = Field(default=30, ge=1, le=120)
 
 
 def load_settings(config_path: str | Path) -> Settings:

@@ -1,6 +1,6 @@
 # 日志排查 MCP · Python 第一版
 
-图形安装版：双击 `LogTools-Setup-0.2.3-x64.exe` 离线安装，可手动新增、编辑项目名称/服务器地址/端口，也可“一键导入服务器配置”带入多个日志项目，之后在界面设置自己的凭据。无需 known_hosts、主机指纹或管理员确认。详见 [图形版使用与配置导入](docs/desktop.md)。
+图形安装版：双击 `LogTools-Setup-0.2.4-x64.exe` 离线安装，可手动新增、编辑项目名称/服务器地址/端口，也可“一键导入服务器配置”带入多个日志项目，之后在界面设置自己的凭据。无需 known_hosts、主机指纹或管理员确认。详见 [图形版使用与配置导入](docs/desktop.md)。
 
 ## 分享与新机器安装
 
@@ -170,3 +170,8 @@ cd D:\project\company\log-tools
 测试覆盖本地查询、时区和堆栈上下文、脱敏、gzip、读取上限、目录限制、下载失败/文件变化、FTP/SFTP 实际本机传输、未知 SFTP 主机拒绝、FTPS TLS 配置，以及真实 stdio MCP 客户端调用。没有配置或连接公司的真实日志服务器；FTPS 当前只验证客户端加密配置，尚未做实际 TLS 服务器联调。
 
 实现参考：[Python Windows 安装说明](https://docs.python.org/3.13/using/windows.html)、[MCP Python SDK 1.x](https://py.sdk.modelcontextprotocol.io/v1/)、[Paramiko 客户端文档](https://docs.paramiko.org/en/stable/api/client.html)、[Python ftplib](https://docs.python.org/3/library/ftplib.html)。
+
+
+## 0.2.4：只保存关键日志片段
+
+新增 SFTP 最新尾部、历史时段和完整流式检索，Linux 无需新建服务或脚本。通过 GUI 的“4 片段检索”或 query.cmd collect 使用，只保存命中上下文。原配置/账号/缓存兼容，无需重新配置；更新后重启 MCP 客户端加载第 11 个工具 collect_log_fragments。历史全文扫描仍可能传输整份候选内容，但不会把原始文件落盘。详见 [片段检索流程](docs/fragments.md)。

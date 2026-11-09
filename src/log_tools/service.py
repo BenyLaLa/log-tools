@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .config import remote_path
 from .discovery import Discovery
+from .fragments import Collector
 from .query import Query
 from .remote import connect, modification_time
 from .store import Store, now
@@ -22,6 +23,8 @@ class LogService:
         self.query = Query(settings, self.store)
         self.connector = connector
         self.discovery = Discovery()
+        self.collector = Collector(settings, self.store, connector)
+        self.collection_slots = threading.BoundedSemaphore(2)
         self.pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="log-download")
         self.jobs = {}
         self.imports = set()
@@ -49,6 +52,23 @@ class LogService:
                     recursive=None, max_depth=None, cursor=None):
         return self.discovery.list(self.connector, self.server(server), server,
                                    directory, pattern, limit, recursive, max_depth, cursor)
+
+    def collect_fragments(self, server, **arguments):
+        if not self.collection_slots.acquire(blocking=False):
+            raise ValueError("Two fragment scans are already running; wait for one to finish")
+        try:
+            result = self.collector.collect(server, self.server(server), **arguments)
+            parameters = result["collection"]["parameters"]
+            result["preview"] = self.query.search(result["dataset_id"],
+                **{key: parameters[key] for key in ("query", "start_time", "end_time", "level", "trace_id")}, limit=10)
+            if not result["preview"]["matches"] and result["files"]:
+                result["preview"] = self.query.search(result["dataset_id"], limit=10)
+                result["preview_note"] = "Original filter may no longer match redacted text; showing saved context"
+            result["preview"]["contexts"] = [self.query.context(result["dataset_id"], row["file_id"], row["line"], 3, 10)
+                                             for row in result["preview"]["matches"][:3]]
+            return result
+        finally:
+            self.collection_slots.release()
 
     def download(self, server, paths, max_bytes=None):
         config = self.server(server)
@@ -165,7 +185,7 @@ class LogService:
             importing = job_id in self.imports
         if (
             not importing
-            and manifest["status"] in ("queued", "downloading")
+            and manifest["status"] in ("queued", "downloading", "collecting")
             and (future is None or future.done())
         ):
             # A different MCP process may own this job. Only recover it after its
@@ -175,10 +195,11 @@ class LogService:
                 return self.store.read(job_id)
             try:
                 manifest = self.store.read(job_id)
-                if manifest["status"] in ("queued", "downloading"):
+                if manifest["status"] in ("queued", "downloading", "collecting"):
                     manifest["status"] = "interrupted"
                     manifest["errors"].append(
-                        {"reason": "Process stopped before download finished; retry download"}
+                        {"reason": "Fragment scan interrupted; start a new scan" if manifest.get("kind") == "fragments"
+                         else "Process stopped before download finished; retry download"}
                     )
                     self.store.save(manifest)
             finally:

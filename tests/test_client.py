@@ -73,7 +73,7 @@ def test_client_commands_against_real_mcp(tmp_path):
     )
     result = cli(config, "check")
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout)["tool_count"] == 10
+    assert json.loads(result.stdout)["tool_count"] == 11
     result = cli(config, "import", str(log))
     assert result.returncode == 0, result.stderr
     dataset = json.loads(result.stdout)

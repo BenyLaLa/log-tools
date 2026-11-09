@@ -15,7 +15,8 @@ root = Path(SPECPATH).parent
 source = str(root / 'src')
 shared = collect_data_files('mcp') + collect_data_files('jsonschema_specifications')
 shared += [(str(root / 'build/desktop-licenses'), 'licenses'),
-           (str(root / 'docs/desktop.md'), 'docs')]
+           (str(root / 'docs/desktop.md'), 'docs'),
+           (str(root / 'docs/fragments.md'), 'docs')]
 hidden = collect_submodules('mcp', filter=lambda name: not name.startswith('mcp.cli'))
 gui = Analysis([str(root / 'src/log_tools/desktop_entry.py')], pathex=[source],
                datas=shared, hiddenimports=hidden,

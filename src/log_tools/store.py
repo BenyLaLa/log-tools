@@ -90,14 +90,14 @@ class Store:
                     data = self.read(entry.name)
                     result.append(
                         {
-                            key: data[key]
-                            for key in (
+                            **({"kind": data["kind"], "bytes_saved": data.get("bytes_saved", 0)} if "kind" in data else {}),
+                            **{key: data[key] for key in (
                                 "dataset_id",
                                 "source",
                                 "created_at",
                                 "status",
                                 "bytes_downloaded",
-                            )
+                            )},
                         }
                     )
                 except (ValueError, OSError, KeyError):

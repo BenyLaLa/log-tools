@@ -111,7 +111,7 @@ class Query:
 
     def records(self, dataset_id, budget, file_id=None):
         manifest = self.store.read(dataset_id)
-        if manifest["status"] in ("queued", "downloading"):
+        if manifest["status"] in ("queued", "downloading", "collecting"):
             raise ValueError("Dataset is still downloading; check get_download_status first")
         files = manifest["files"]
         if file_id:
@@ -119,7 +119,8 @@ class Query:
             if not files:
                 raise ValueError("File ID does not belong to this dataset")
         for file in files:
-            stamp, level = None, None
+            stamp = parse_time(file["initial_timestamp"], self.settings.timezone_offset) if file.get("initial_timestamp") else None
+            level = file.get("initial_level")
             path = self.store.file_path(dataset_id, file["file_id"])
             for number, text in enumerate(
                 lines(path, file["compressed"], manifest["encoding"], budget), 1
@@ -130,7 +131,14 @@ class Query:
                     stamp, level = current_stamp, current_level
                 elif current_level:
                     level = current_level
+                origin = {}
+                if "line_map" in file and number <= len(file["line_map"]):
+                    mapping = file["line_map"][number - 1]
+                    origin["source"] = {"path": file["remote_path"], "line": mapping["source_line"],
+                                        "byte_start": mapping["byte_start"], "byte_end": mapping["byte_end"],
+                                        "byte_unit": file["byte_unit"], "version": file["source_version"]}
                 yield {
+                    **origin,
                     "file_id": file["file_id"],
                     "filename": file["name"],
                     "line": number,
@@ -147,6 +155,15 @@ class Query:
         result["text"] = text[:2000]
         result["text_truncated"] = len(text) > 2000
         return result
+
+    def scope_warnings(self, dataset_id):
+        manifest = self.store.read(dataset_id)
+        if manifest.get("kind") == "fragments":
+            warnings = ["fragment_dataset_contains_selected_context_only_not_original_files"]
+            if manifest["collection"].get("incomplete"):
+                warnings.append("remote_collection_incomplete_check_manifest_coverage_and_warnings")
+            return warnings
+        return []
 
     def search(
         self,
@@ -173,7 +190,7 @@ class Query:
         if level and level not in ("TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "CRITICAL"):
             raise ValueError("Unsupported log level")
         budget = Budget(self.settings.scan_max_bytes, self.settings.scan_timeout_seconds)
-        results, warnings, matches, unknown_times = [], [], 0, 0
+        results, warnings, matches, unknown_times = [], self.scope_warnings(dataset_id), 0, 0
         more = False
         try:
             for record in self.records(dataset_id, budget):
@@ -212,7 +229,7 @@ class Query:
         if line < 1 or not 0 <= before <= 50 or not 0 <= after <= 50:
             raise ValueError("line must be positive; before/after must be 0..50")
         budget = Budget(self.settings.scan_max_bytes, self.settings.scan_timeout_seconds)
-        results, warnings = [], []
+        results, warnings = [], self.scope_warnings(dataset_id)
         try:
             for record in self.records(dataset_id, budget, file_id):
                 if record["line"] >= max(1, line - before):
@@ -235,7 +252,7 @@ class Query:
         if not 1 <= limit <= 20:
             raise ValueError("limit must be 1..20")
         budget = Budget(self.settings.scan_max_bytes, self.settings.scan_timeout_seconds)
-        selected, warnings = [], []
+        selected, warnings = [], self.scope_warnings(dataset_id)
         events = undated = 0
         try:
             for sequence, record in enumerate(self.records(dataset_id, budget)):
@@ -275,12 +292,12 @@ class Query:
             "warnings": warnings,
             "scanned_bytes": budget.scanned_bytes,
             "ordering": "timestamp descending; dated events first; ties use reverse source order",
-            "scope": "Only the files in this downloaded snapshot were inspected",
+            "scope": "Only the saved dataset files/fragments were inspected; this is not necessarily the full remote source",
         }
 
     def summary(self, dataset_id):
         budget = Budget(self.settings.scan_max_bytes, self.settings.scan_timeout_seconds)
-        groups, warnings = {}, []
+        groups, warnings = {}, self.scope_warnings(dataset_id)
         total = 0
         try:
             for record in self.records(dataset_id, budget):

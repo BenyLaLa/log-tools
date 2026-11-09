@@ -29,6 +29,12 @@ PACKAGE_FILES = (
     "src/log_tools/query.py", "src/log_tools/remote.py", "src/log_tools/server.py",
     "src/log_tools/service.py", "src/log_tools/store.py",
     "src/log_tools/credentials.py", "src/log_tools/leases.py",
+    "src/log_tools/fragments.py", "src/log_tools/discovery.py", "docs/fragments.md",
+    "src/log_tools/desktop.py", "src/log_tools/desktop_config.py",
+    "src/log_tools/desktop_entry.py", "src/log_tools/mcp_entry.py",
+    "requirements-desktop.txt", "build-desktop.cmd", "CHANGELOG.md", "docs/desktop.md",
+    "scripts/build-desktop.ps1", "scripts/collect-desktop-licenses.py",
+    "packaging/logtools.spec", "packaging/setup.iss", "packaging/ChineseSimplified.isl",
 )
 
 PYTHON_VERSION = "3.13.17"

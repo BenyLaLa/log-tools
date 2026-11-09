@@ -1,6 +1,6 @@
 # 图形安装版与服务器配置导入
 
-发布文件：`LogTools-Setup-0.2.3-x64.exe`。适用于 Windows 10/11 x64，包含运行时和依赖，安装不需要 Python、pip 或外网。
+发布文件：`LogTools-Setup-0.2.4-x64.exe`。适用于 Windows 10/11 x64，包含运行时和依赖，安装不需要 Python、pip 或外网。
 
 ## 首次安装
 
@@ -75,7 +75,7 @@ python -m venv .venv-desktop
 .\build-desktop.cmd -PythonPath '.\.venv-desktop\Scripts\python.exe' -IsccPath 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
 ```
 
-产物位于 `dist/LogTools-Setup-0.2.3-x64.exe`。源配置、下载数据和 `.git` 不参与打包。安装器升级使用固定 AppId；发布时同步更新版本号并执行真实 EXE MCP 握手、离线安装、保留配置升级与导入测试。
+产物位于 `dist/LogTools-Setup-0.2.4-x64.exe`。源配置、下载数据和 `.git` 不参与打包。安装器升级使用固定 AppId；发布时同步更新版本号并执行真实 EXE MCP 握手、离线安装、保留配置升级与导入测试。
 
 此构建不配置远端 Linux 账号，也不会自动修改当前电脑的 Codex 配置；只有用户在界面中点击接入并确认时才会写入。
 
@@ -113,3 +113,8 @@ MCP `list_remote_logs` 不传递 `recursive`、`pattern`、`max_depth` 时使用
 文件名日期和修改时间仅用于选择候选日志，最终按日志内容时间核实。AI 查最新异常时先看当前错误日志，证据不足再扩展历史；按日期、请求标识排查时选择相应归档及日志级别，并明确实际查询范围。发现文件不会自动下载，也不会自动去重历史下载缓存；下载仍需要显式选择路径。
 
 升级后重启正在运行的 MCP 客户端，让新工具参数和项目设置生效；安装路径未改变时无需重新接入。
+
+
+## 0.2.4：只保存关键日志片段
+
+新增 SFTP 最新尾部、历史时段和完整流式检索，Linux 无需新建服务或脚本。通过 GUI 的“4 片段检索”或 query.cmd collect 使用，只保存命中上下文。原配置/账号/缓存兼容，无需重新配置；更新后重启 MCP 客户端加载第 11 个工具 collect_log_fragments。历史全文扫描仍可能传输整份候选内容，但不会把原始文件落盘。详见 [片段检索流程](fragments.md)。

@@ -78,6 +78,23 @@ class SftpRemote:
             while block := source.read(64 * 1024):
                 consume(block)
 
+    @contextmanager
+    def open_reader(self, path):
+        """Unbuffered, read-only SFTP handle. No prefetch, download helper or SSH exec."""
+        path = remote_path(path, self.config.root)
+        relative = posixpath.relpath(path, self.config.root)
+        current = self.config.root
+        for component in ([] if relative == "." else relative.split("/")):
+            current = posixpath.join(current, component)
+            if stat.S_ISLNK(self.sftp.lstat(current).st_mode):
+                raise ValueError("Symlink paths are not collected")
+        if not stat.S_ISREG(self.sftp.lstat(path).st_mode):
+            raise ValueError("Only regular log files can be collected")
+        with self.sftp.open(self.checked(path), "rb", bufsize=0) as source:
+            if not stat.S_ISREG(source.stat().st_mode):
+                raise ValueError("Only regular log files can be collected")
+            yield source
+
     def close(self):
         self.client.close()
 

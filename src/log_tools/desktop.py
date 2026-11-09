@@ -148,10 +148,12 @@ class Window(QMainWindow):
         self.make_servers()
         self.make_client()
         self.make_storage()
+        self.make_fragments()
         self.status = QLabel("准备就绪。可手动新增项目，也可导入服务器配置文件。")
         self.status.setWordWrap(True)
         self.status.setTextFormat(Qt.TextFormat.PlainText)
         layout.addWidget(self.status)
+        self.tabs.currentChanged.connect(lambda index: self.status.setText("先列出候选文件并勾选目标日期，再检索保存片段；查看范围与遗漏提示。") if index == 3 else None)
         self.setCentralWidget(container)
         self.refresh()
 
@@ -303,8 +305,141 @@ class Window(QMainWindow):
         layout.addRow(note)
         self.tabs.addTab(page, "3  安装与数据")
 
+    def make_fragments(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        note = QLabel("通过现有 SFTP 读取范围，在本机内存检索，只保存命中上下文。Linux 无需改造。历史/完整模式可能传输全部候选内容；尾部模式只覆盖有限范围。")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        fields = QWidget()
+        fields_layout = QHBoxLayout(fields)
+        left, right = QFormLayout(), QFormLayout()
+        fields_layout.addLayout(left, 1)
+        fields_layout.addLayout(right, 1)
+        self.fragment_server = QComboBox()
+        self.fragment_server.currentIndexChanged.connect(self.clear_fragment_selection)
+        self.fragment_mode = QComboBox()
+        for name, value in (("最新尾部（有限范围）", "tail"), ("历史时段（选定日期文件）", "history"), ("完整流式（选定文件）", "full")):
+            self.fragment_mode.addItem(name, value)
+        self.fragment_query, self.fragment_trace, self.fragment_start, self.fragment_end = [QLineEdit() for _ in range(4)]
+        self.fragment_query.setPlaceholderText("例如 NullPointerException；按字面匹配")
+        self.fragment_trace.setPlaceholderText("可选 traceId")
+        self.fragment_start.setPlaceholderText("2026-10-28 09:00:00；历史模式至少填一项时间")
+        self.fragment_end.setPlaceholderText("2026-10-28 18:00:00")
+        self.fragment_level = QComboBox()
+        for name, value in (("ERROR", "ERROR"), ("全部级别", ""), ("WARN", "WARN"), ("INFO", "INFO"), ("DEBUG", "DEBUG"), ("FATAL", "FATAL")):
+            self.fragment_level.addItem(name, value)
+        for name, widget in (("SFTP 项目", self.fragment_server), ("查询模式", self.fragment_mode),
+                             ("关键词", self.fragment_query), ("traceId", self.fragment_trace),
+                             ("开始时间", self.fragment_start), ("结束时间", self.fragment_end), ("级别", self.fragment_level)):
+            left.addRow(name, widget)
+        def spin(low, high, value):
+            widget = QSpinBox()
+            widget.setRange(low, high)
+            widget.setValue(value)
+            return widget
+        self.fragment_tail = spin(1, 32, 8)
+        self.fragment_network = spin(1, 2048, 64)
+        self.fragment_file = spin(1, 2048, 32)
+        self.fragment_save = spin(1, 16, 2)
+        self.fragment_seconds = spin(1, 120, 30)
+        self.fragment_before = spin(0, 50, 20)
+        self.fragment_after = spin(0, 100, 60)
+        for name, widget in (("尾部窗口（MiB）", self.fragment_tail), ("本次网络上限（MiB）", self.fragment_network),
+                             ("每文件读取上限（MiB）", self.fragment_file), ("片段保存上限（MiB）", self.fragment_save),
+                             ("扫描限时（秒）", self.fragment_seconds), ("前文行数", self.fragment_before), ("后文行数", self.fragment_after)):
+            right.addRow(name, widget)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(fields)
+        layout.addWidget(scroll, 2)
+        row = QHBoxLayout()
+        row.addWidget(self.button("列出候选文件", self.start_fragment_listing))
+        row.addWidget(self.button("全选候选文件", lambda: self.check_fragment_files(True)))
+        row.addWidget(self.button("清空勾选", lambda: self.check_fragment_files(False)))
+        row.addStretch()
+        row.addWidget(self.button("检索并保存片段", self.start_fragment_collection, True))
+        row.addWidget(self.button("继续上次扫描", lambda: self.start_fragment_collection(True)))
+        layout.addLayout(row)
+        self.fragment_tree = QTreeWidget()
+        self.fragment_tree.setHeaderLabels(["勾选待查日志（按文件名选择日期/分卷）", "大小（字节）", "修改时间（UTC）"])
+        self.fragment_tree.setColumnWidth(0, 490)
+        layout.addWidget(self.fragment_tree, 2)
+        self.fragment_result = QTextEdit()
+        self.fragment_result.setReadOnly(True)
+        self.fragment_result.setPlaceholderText("检索完成后显示网络读取量、本地保存量、未扫描范围、数据集 ID 和少量片段。继续扫描沿用上次条件，可能包含重叠上下文。")
+        layout.addWidget(self.fragment_result, 1)
+        self.last_fragment_result = self.last_fragment_alias = None
+        self.tabs.addTab(page, "4  片段检索")
+
+    def clear_fragment_selection(self):
+        if hasattr(self, "fragment_tree"):
+            self.fragment_tree.clear()
+            self.last_fragment_result = self.last_fragment_alias = None
+
+    def check_fragment_files(self, checked):
+        for index in range(self.fragment_tree.topLevelItemCount()):
+            self.fragment_tree.topLevelItem(index).setCheckState(0, Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
+
+    def start_fragment_listing(self):
+        alias = self.fragment_server.currentText()
+        if not alias:
+            raise ValueError("请先保存一个 SFTP 项目。")
+        self.background(lambda: {**preview_logs(self.settings.path, alias), "fragment_listing": True})
+
+    def fragment_arguments(self, resume=False):
+        alias = self.fragment_server.currentText()
+        if not alias:
+            raise ValueError("请先保存一个 SFTP 项目。")
+        arguments = {"max_network_bytes": self.fragment_network.value() * 1024**2,
+                     "max_file_bytes": self.fragment_file.value() * 1024**2,
+                     "max_output_bytes": self.fragment_save.value() * 1024**2,
+                     "timeout_seconds": self.fragment_seconds.value()}
+        if resume:
+            if not self.last_fragment_result or self.last_fragment_alias != alias or not self.last_fragment_result.get("resume_dataset_id"):
+                raise ValueError("当前项目没有可继续的扫描；请查看结果中的遗漏/压缩日志提示。")
+            arguments["resume_dataset_id"] = self.last_fragment_result["resume_dataset_id"]
+        else:
+            paths = [self.fragment_tree.topLevelItem(index).data(0, Qt.ItemDataRole.UserRole)
+                     for index in range(self.fragment_tree.topLevelItemCount())
+                     if self.fragment_tree.topLevelItem(index).checkState(0) == Qt.CheckState.Checked]
+            if not 1 <= len(paths) <= 200:
+                raise ValueError("请勾选 1–200 个候选日志；历史查询请按文件名选择目标日期。")
+            start, end = self.fragment_start.text().strip() or None, self.fragment_end.text().strip() or None
+            from .query import parse_time
+            settings = load_settings(self.settings.path)
+            times = [parse_time(value, settings.timezone_offset) if value else None for value in (start, end)]
+            if times[0] and times[1] and times[0] > times[1]:
+                raise ValueError("开始时间不能晚于结束时间。")
+            if self.fragment_mode.currentData() == "history" and not (start or end):
+                raise ValueError("历史时段模式至少填写开始或结束时间。")
+            arguments.update(paths=paths, mode=self.fragment_mode.currentData(), query=self.fragment_query.text(),
+                             trace_id=self.fragment_trace.text().strip() or None, start_time=start, end_time=end,
+                             level=self.fragment_level.currentData() or None, before=self.fragment_before.value(),
+                             after=self.fragment_after.value(), tail_bytes=self.fragment_tail.value() * 1024**2)
+        return alias, arguments
+
+    def start_fragment_collection(self, resume=False):
+        alias, arguments = self.fragment_arguments(resume)
+        def run():
+            from .service import LogService
+            service = LogService(load_settings(self.settings.path))
+            try:
+                return {**service.collect_fragments(alias, **arguments), "fragment_collection": True, "server": alias}
+            finally:
+                service.close()
+        self.background(run)
+
     def refresh(self, selected_alias=None):
         document = self.settings.read()
+        current_fragment = self.fragment_server.currentText()
+        self.fragment_server.blockSignals(True)
+        self.fragment_server.clear()
+        self.fragment_server.addItems([name for name, value in document["servers"].items() if value.get("protocol", "sftp") == "sftp"])
+        if current_fragment in document["servers"]:
+            self.fragment_server.setCurrentText(current_fragment)
+        self.fragment_server.blockSignals(False)
+        self.clear_fragment_selection()
         self.table.blockSignals(True)
         self.table.setRowCount(0)
         selected_row = 0
@@ -492,10 +627,32 @@ class Window(QMainWindow):
         self.status.setText("正在连接或扫描，请稍候……")
 
     def show_result(self, result):
+        if isinstance(result, dict) and result.get("fragment_listing"):
+            if result["server"] != self.fragment_server.currentText():
+                return
+            self.fragment_tree.clear()
+            for file in result["files"]:
+                if not file["name"].endswith((".log", ".log.gz")):
+                    continue
+                item = QTreeWidgetItem(self.fragment_tree, [file["relative_path"], str(file["size"]), file["modified_at"] or "未知"])
+                item.setData(0, Qt.ItemDataRole.UserRole, file["remote_path"])
+                item.setCheckState(0, Qt.CheckState.Unchecked)
+            self.fragment_result.setPlainText(json.dumps({"files": self.fragment_tree.topLevelItemCount(),
+                "incomplete": result["incomplete"], "warnings": result["warnings"], "skipped": result["skipped_directories"]}, ensure_ascii=False, indent=2))
+            self.status.setText("候选文件已列出；请勾选目标日期/分卷，检查扫描遗漏提示。")
+            return
+        if isinstance(result, dict) and result.get("fragment_collection"):
+            self.last_fragment_result, self.last_fragment_alias = result, result["server"]
+            self.fragment_result.setPlainText(json.dumps(result, ensure_ascii=False, indent=2))
+            state = result["collection"]
+            self.status.setText(f"片段已保存：网络读取 {state['network_bytes']} 字节，本地保存 {state['saved_bytes']} 字节。" + ("扫描未完整覆盖，请查看提示或继续扫描。" if state['incomplete'] else "已完成本次选定范围。"))
+            return
         if isinstance(result, dict) and result.get("preview"):
             self.show_preview(result)
             return
         self.output.setPlainText(str(result))
+        if self.tabs.currentIndex() == 3:
+            self.fragment_result.setPlainText(str(result))
         self.status.setText(str(result).splitlines()[0])
 
     def start_remote(self):
@@ -606,6 +763,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--home", type=Path)
     parser.add_argument("--screenshot", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--screenshot-tab", choices=["servers", "fragments"], default="servers", help=argparse.SUPPRESS)
     args = parser.parse_args()
     app = QApplication(sys.argv[:1])
     if args.screenshot and os.name == "nt":
@@ -618,6 +776,8 @@ def main():
     app.setStyleSheet(STYLE)
     window = Window(args.home)
     window.show()
+    if args.screenshot_tab == "fragments":
+        window.tabs.setCurrentIndex(3)
     if args.screenshot:
         app.processEvents()
         window.grab().save(str(args.screenshot))

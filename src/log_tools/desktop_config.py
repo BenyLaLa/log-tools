@@ -16,7 +16,7 @@ from .config import DiscoverySettings, Settings, load_settings, remote_path
 from .deployment import validate_alias, write_json
 from .leases import Lease
 
-VERSION = "0.2.3"
+VERSION = "0.2.4"
 
 
 def application_home():
@@ -205,7 +205,7 @@ def mcp_entry(config_path):
         command = sys.executable
         args = ["-m", "log_tools", "--config", str(config_path)]
     return {"command": command, "args": args, "enabled": True,
-            "startup_timeout_sec": 30, "tool_timeout_sec": 120}
+            "startup_timeout_sec": 30, "tool_timeout_sec": 180}
 
 
 def register_codex(config_path, codex_path, *, replace=False):

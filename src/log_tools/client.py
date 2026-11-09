@@ -164,6 +164,18 @@ async def dispatch(session, args, statuses):
             **servers,
             "remote_connection_tested": False,
         }
+    if action == "collect":
+        arguments = {"server": args.server, "paths": args.paths or None, "mode": args.mode,
+                     "query": args.query, "start_time": args.start, "end_time": args.end,
+                     "level": args.level, "trace_id": args.trace_id, "before": args.before,
+                     "after": args.after, "tail_bytes": args.tail_mib * 1024**2,
+                     "timeout_seconds": args.seconds, "limit": args.limit,
+                     "resume_dataset_id": args.resume}
+        for name, field in (("network_mib", "max_network_bytes"), ("file_mib", "max_file_bytes"),
+                            ("save_mib", "max_output_bytes")):
+            value = getattr(args, name)
+            arguments[field] = value * 1024**2 if value is not None else None
+        return await call(session, "collect_log_fragments", arguments)
     if action == "servers":
         return await call(session, "list_servers", {})
     if action == "files":
@@ -337,6 +349,24 @@ def parser():
     files.add_argument("--recursive", action=argparse.BooleanOptionalAction, default=None)
     files.add_argument("--max-depth", type=bounded(0, 10))
     files.add_argument("--limit", type=bounded(1, 1000), default=100)
+    collect = sub.add_parser("collect", help="SFTP range/stream search; save matching context only, no original-file copies")
+    collect.add_argument("--server", required=True)
+    collect.add_argument("paths", nargs="*")
+    collect.add_argument("--mode", choices=["tail", "history", "full"], default="tail")
+    collect.add_argument("--query", default="")
+    collect.add_argument("--trace-id")
+    collect.add_argument("--start")
+    collect.add_argument("--end")
+    collect.add_argument("--level", choices=["TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "CRITICAL"])
+    collect.add_argument("--before", type=bounded(0, 50), default=20)
+    collect.add_argument("--after", type=bounded(0, 100), default=60)
+    collect.add_argument("--tail-mib", type=bounded(1, 32), default=8)
+    collect.add_argument("--network-mib", type=bounded(1, 2048))
+    collect.add_argument("--file-mib", type=bounded(1, 2048))
+    collect.add_argument("--save-mib", type=bounded(1, 16))
+    collect.add_argument("--seconds", type=bounded(1, 120))
+    collect.add_argument("--limit", type=bounded(1, 100), default=100)
+    collect.add_argument("--resume", help="Previous fragment dataset ID; keeps its paths, mode and filters")
     datasets = sub.add_parser("datasets", help="List cached snapshots")
     datasets.add_argument("--limit", type=bounded(1, 200), default=50)
     for name in ("status", "summary"):
@@ -399,7 +429,7 @@ async def execute(args, params, statuses):
     with open(os.devnull, "w") as diagnostics:
         async with stdio_client(params, errlog=diagnostics) as (reader, writer):
             async with ClientSession(
-                reader, writer, read_timeout_seconds=timedelta(seconds=45)
+                reader, writer, read_timeout_seconds=timedelta(seconds=180)
             ) as session:
                 await session.initialize()
                 return await dispatch(session, args, statuses)

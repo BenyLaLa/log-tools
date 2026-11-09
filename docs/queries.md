@@ -128,3 +128,8 @@ cd D:\project\company\log-tools
 ```
 
 `latest --server` 为控制下载量，默认只查指定目录的当前日志；加 `--recursive` 才包含历史子目录。它会拒绝对未完整扫描的结果或超过 `--max-files` 的候选集合声称找到了最新异常。先用 `files` 检查范围，再按目录或文件名缩小候选；文件名时间不是日志事件时间。MCP 工具本身默认按项目设置发现历史。
+
+
+## SFTP 片段采集（0.2.4）
+
+推荐使用 collect_log_fragments 或 query.cmd collect 先筛选再保存上下文。先 files 定位日期文件，再 collect --mode tail/history/full；可用 --resume DATASET_ID 继续。完整参数和来源引用规则见 [片段检索](fragments.md)。旧 fetch/latest --server 仍会完整下载，不能代替新模式。
