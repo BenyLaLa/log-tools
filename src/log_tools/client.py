@@ -255,11 +255,7 @@ async def dispatch(session, args, statuses):
                 raise ClientError("Discovery incomplete; inspect files output/warnings, adjust scan scope or limits, then retry")
             if listing.get("total_files", len(files)) > args.max_files:
                 raise ClientError("Too many matching files; narrow --pattern/--directory or raise --max-files")
-            while listing.get("next_cursor"):
-                page = await call(session, "list_remote_logs", {"server": args.server, "cursor": listing["next_cursor"], "limit": 1000})
-                files.extend(page["files"])
-                listing.update(next_cursor=page["next_cursor"], truncated=page["truncated"])
-            if listing.get("truncated") or len(files) > args.max_files:
+            if listing.get("truncated") or listing.get("next_cursor") or len(files) > args.max_files:
                 raise ClientError(
                     "Too many matching files; narrow --pattern/--directory or raise --max-files"
                 )

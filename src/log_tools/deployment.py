@@ -35,6 +35,8 @@ PACKAGE_FILES = (
     "requirements-desktop.txt", "build-desktop.cmd", "CHANGELOG.md", "docs/desktop.md",
     "scripts/build-desktop.ps1", "scripts/collect-desktop-licenses.py",
     "packaging/logtools.spec", "packaging/setup.iss", "packaging/ChineseSimplified.isl",
+    "packaging/licenses/GPL-3.0-only.txt", "packaging/licenses/LGPL-3.0-only.txt",
+    "packaging/licenses/README.txt",
 )
 
 PYTHON_VERSION = "3.13.17"

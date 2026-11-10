@@ -18,7 +18,7 @@ class Discovery:
         self.lock = threading.Lock()
 
     def list(self, connector, config, server, directory=".", pattern=None, limit=100,
-             recursive=None, max_depth=None, cursor=None):
+             recursive=None, max_depth=None, cursor=None, *, all_files=False):
         if not 1 <= limit <= 1000:
             raise ValueError("limit must be 1..1000")
         if cursor:
@@ -134,6 +134,8 @@ class Discovery:
                     "warnings": warnings, "warning_count": warning_count,
                     "diagnostics_truncated": skipped_count > len(skipped) or warning_count > len(warnings) or scanned_directories > len(directories),
                     "incomplete": bool(warning_count), "expires": time.monotonic() + 300}
+        if all_files:
+            return self.page(snapshot, None, 0, len(files))
         key = uuid.uuid4().hex
         with self.lock:
             self.snapshots = {k: v for k, v in self.snapshots.items() if v["expires"] > time.monotonic()}

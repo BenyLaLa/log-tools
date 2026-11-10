@@ -35,8 +35,6 @@ def _api():
     api.CredWriteW.restype = wt.BOOL
     api.CredReadW.argtypes = [wt.LPCWSTR, wt.DWORD, wt.DWORD, ct.POINTER(ct.POINTER(Credential))]
     api.CredReadW.restype = wt.BOOL
-    api.CredDeleteW.argtypes = [wt.LPCWSTR, wt.DWORD, wt.DWORD]
-    api.CredDeleteW.restype = wt.BOOL
     api.CredFree.argtypes = [ct.c_void_p]
     return ct, wt, Credential, api
 
@@ -76,10 +74,3 @@ def write_credential(target, value):
                       CredentialBlob=buffer, Persist=2, UserName="LogTools")
     if not api.CredWriteW(ct.byref(item), 0):
         raise OSError("Could not save credential for the current Windows user")
-
-
-def delete_credential(target):
-    _target(target)
-    ct, _, _, api = _api()
-    if not api.CredDeleteW(target, 1, 0) and ct.get_last_error() != 1168:
-        raise OSError("Could not remove Windows credential")

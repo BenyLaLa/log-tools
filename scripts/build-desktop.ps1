@@ -15,7 +15,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'PyInstaller build failed.' }
     & $IsccPath "/DBundleDir=$(Join-Path $root 'dist\desktop\LogTools')" "/DOutputDir=$(Join-Path $root 'dist')" (Join-Path $root 'packaging\setup.iss')
     if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed.' }
-    $installer=Join-Path $root 'dist\LogTools-Setup-0.2.4-x64.exe'
+    $installer=Join-Path $root 'dist\LogTools-Setup-0.2.5-x64.exe'
     $sha=[Security.Cryptography.SHA256]::Create()
     $inputStream=[IO.File]::OpenRead($installer)
     try { $digest=([BitConverter]::ToString($sha.ComputeHash($inputStream))).Replace('-','').ToLowerInvariant() }

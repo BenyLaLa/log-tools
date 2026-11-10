@@ -1,6 +1,6 @@
-# 0.2.4 · SFTP 范围与历史片段检索
+# SFTP 范围与历史片段检索
 
-本功能在原有 0.2.3 上增加，不需要 Linux 脚本、常驻服务、新端口或通用 SSH 命令权限。沿用现有只读 SFTP 账号及日志根目录，服务器不执行 grep/shell/Python。原配置、凭据、历史数据和原有完整下载工具兼容保留；新片段功能不会自动回退到完整下载。
+片段检索使用已配置的只读 SFTP 账号和日志根目录。检索在本机执行，Linux 侧只需提供 SFTP 文件读取。
 
 ## 过程与三种模式
 
@@ -12,13 +12,13 @@
 | history 历史时段 | 从所选历史文件开头流式扫描，按内容时间过滤，至少填写一个时间边界 | 已知日期/时段的问题 |
 | full 完整流式 | 从所选文件开头流式扫描，按关键词/级别/traceId 等筛选 | 不知道问题位于哪里 |
 
-history 第一版不通过时间二分定位。日志不必严格有序；时间过滤仍需要读取内容。日期和分卷由文件清单选择，文件名/mtime 不能代替内容时间。
+history 按日志头部时间筛选，即使事件写入顺序与时间顺序不同也适用。形如 `MM-dd HH:mm:ss.SSS` 的时间会参考文件名日期或来源修改时间推定年份。先用文件清单缩小日期和分卷范围可减少网络读取。
 
 tail 只传选定范围。history/full 为完整检索可能经网络读取整份候选文件，区别是本地磁盘不保存原始整份内容。没有把读取窗口原文或压缩包先写入临时文件；只在内存持有有限的缓冲和上下文。
 
 ## 图形界面
 
-升级到 LogTools-Setup-0.2.4-x64.exe 后，原配置位置及账号不用重配。打开“4 片段检索”：
+在图形版打开“4 片段检索”。安装及配置导入见 [图形版使用指南](desktop.md)。
 
 1. 选择已保存的 SFTP 项目，点击“列出候选文件”。扫描沿用“历史日志扫描”的目录/深度/排除规则。
 2. 查看清单中的扫描遗漏提示，勾选目标日期及各分卷；不自动按 mtime 排除文件。
@@ -47,7 +47,7 @@ query.cmd context --dataset RETURNED_DATASET_ID --file RETURNED_FILE_ID --line 1
 
 ## MCP
 
-新增 collect_log_fragments，工具总数 11；原有工具保留。AI 应先 list_remote_logs 并收集清单全部页，选择日期/级别相关路径，再调用新工具。已有 MCP 进程需重启加载新代码，安装路径/配置路径不变通常无需重新接入。
+先调用 `list_remote_logs` 并读取相关清单页，选择日期和级别相关的路径，再调用 `collect_log_fragments`。
 
 ```json
 {
@@ -97,6 +97,8 @@ network_bytes 统计实际通过 SFTP read 收到的文件正文，包括必要�
 ## 本地证据与覆盖范围
 
 数据集位于当前配置的 cache_dir/datasets/<dataset_id>/。UUID.log 每个文件保存一个连续上下文片段，manifest.json 记录筛选条件、源文件版本（大小/mtime）、读取范围、网络/落盘量、未完成任务及逐行来源映射。只保存命中相关片段，不保存其余扫描内容。默认原生 GUI 为 %LOCALAPPDATA%\CompanyLogTools 下配置的缓存，源码以 config.json 的 cache_dir 为准。
+
+缓存上限也计入清单。新数据集自身超过上限时会拒绝保存，并返回 `dataset_exceeds_cache_limit`。续扫依赖已缓存的数据集，旧数据集可能因达到缓存上限被清理。
 
 search_logs/read_log_context 的 line 仍是本地片段内行号，用于调用上下文工具。source.path 是远端来源；source.line 为能确认时的原始行号；source.byte_start/byte_end 是原始字节范围（右端不包含）。tail 未从头计行时 source.line=null，必须引用字节偏移，不能编造绝对行号。gzip 的 byte_unit=decompressed，偏移对应解压后的内容，不是压缩文件偏移。
 

@@ -9,13 +9,14 @@ import sys
 import threading
 import time
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import paramiko
 import pytest
 from test_transports import TestSftp, sftp_server  # noqa: F401
 
-from log_tools.config import ServerConfig, Settings
+from log_tools.config import MIB, ServerConfig, Settings
 from log_tools.fragments import Collector
 from log_tools.query import Query
 from log_tools.store import Store
@@ -119,6 +120,21 @@ def test_history_filters_content_times_without_assuming_sorted_logs(memory):
     rows = Query(collector.settings, collector.store).search(result["dataset_id"])["matches"]
     assert len(rows) == 1 and "historical-needle" in rows[0]["text"]
     assert rows[0]["source"]["line"] == 3
+
+
+def test_history_and_saved_fragment_resolve_short_dates_from_source_mtime(memory):
+    collector, remote, config = memory
+    remote.modified = int(datetime(2026, 11, 4, 2, tzinfo=timezone.utc).timestamp())
+    remote.files["/logs/app.log"] = (
+        b"11-04 10:00:00.123 ERROR historical-needle payloadDate=2030-10-22 00:00:00\n"
+        b"11-04 15:00:00.000 ERROR outside time window\n"
+    )
+    result = collector.collect("test", config, ["app.log"], mode="history",
+                               start_time="2026-11-04 09:59:59", end_time="2026-11-04 10:00:01",
+                               before=0, after=0)
+    rows = Query(collector.settings, collector.store).search(result["dataset_id"])["matches"]
+    assert [row["timestamp"] for row in rows] == ["2026-11-04T10:00:00.123000+08:00"]
+    assert "historical-needle" in rows[0]["text"]
 
 
 def test_persistent_resume_strict_network_cap_and_source_change(memory):
@@ -326,10 +342,14 @@ def test_gui_file_selection_history_validation_and_resume(tmp_path, monkeypatch)
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     widgets = pytest.importorskip("PySide6.QtWidgets")
     from log_tools.desktop import Window
+    from log_tools.desktop_config import DesktopSettings
     app = widgets.QApplication.instance() or widgets.QApplication([])
+    settings = DesktopSettings(tmp_path / "gui")
+    settings.save_project("project", {"protocol": "sftp", "host": "test", "username": "reader", "root": "/logs"})
+    original = settings.read()
+    settings.save({**original, "fragment_network_bytes": 8 * MIB, "fragment_output_bytes": MIB // 2},
+                  settings.path.read_bytes())
     view = Window(tmp_path / "gui")
-    view.settings.save_project("project", {"protocol": "sftp", "host": "test", "username": "reader", "root": "/logs"})
-    view.refresh()
     view.show_result({"fragment_listing": True, "server": "project", "files": [{"name": "web-error-2026-10-28.0.log", "relative_path": "error/web-error-2026-10-28.0.log", "remote_path": "/logs/error/web-error-2026-10-28.0.log", "size": 1000, "modified_at": None}], "incomplete": False, "warnings": [], "skipped_directories": []})
     view.check_fragment_files(True)
     view.fragment_mode.setCurrentIndex(1)
@@ -339,10 +359,14 @@ def test_gui_file_selection_history_validation_and_resume(tmp_path, monkeypatch)
     view.fragment_end.setText("2026-10-28 23:59:59")
     alias, args = view.fragment_arguments()
     assert alias == "project" and args["mode"] == "history" and args["paths"] == ["/logs/error/web-error-2026-10-28.0.log"]
-    assert args["max_network_bytes"] == 64 * 1024**2
+    assert view.fragment_network.maximum() == 8
+    assert args["max_network_bytes"] == 8 * MIB and args["max_output_bytes"] == MIB // 2
     view.last_fragment_result, view.last_fragment_alias = {"resume_dataset_id": "previous-id"}, alias
+    original = settings.read()
+    settings.save({**original, "fragment_network_bytes": 4 * MIB}, settings.path.read_bytes())
     _, args = view.fragment_arguments(True)
     assert args["resume_dataset_id"] == "previous-id" and "paths" not in args
+    assert args["max_network_bytes"] == 4 * MIB
     view.close()
     view.deleteLater()
     app.processEvents()

@@ -136,27 +136,14 @@ def test_profile_round_trip_and_old_config_defaults(tmp_path):
         DiscoverySettings(history_dirs=["../outside"])
 
 
-def test_preview_collects_pages_without_download(tmp_path, monkeypatch):
+def test_preview_collects_all_files_in_one_scan(tmp_path, monkeypatch, discovery_service):
     pytest.importorskip("PySide6")
     from log_tools import service as module
     from log_tools.desktop import preview_logs
     store = DesktopSettings(tmp_path)
-    pages = [
-        {"files": [{"name": "first.log"}], "next_cursor": "page2", "incomplete": False},
-        {"files": [{"name": "second.log"}], "next_cursor": None},
-    ]
-    closed = []
-
-    class FakeService:
-        def __init__(self, settings):
-            pass
-
-        def list_remote(self, *args, **kwargs):
-            return pages.pop(0)
-
-        def close(self):
-            closed.append(True)
-
-    monkeypatch.setattr(module, "LogService", FakeService)
+    service, tree, opened = discovery_service
+    tree["/logs"] = [file(f"file-{index}.log") for index in range(1001)]
+    monkeypatch.setattr(module, "LogService", lambda settings: service)
     result = preview_logs(store.path, "test")
-    assert len(result["files"]) == 2 and not result["truncated"] and closed
+    assert len(result["files"]) == 1001 and not result["truncated"]
+    assert result["next_cursor"] is None and opened == ["/logs"]

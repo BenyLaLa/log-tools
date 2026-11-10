@@ -8,6 +8,10 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+MIB = 1024**2
+MAX_CACHE_BYTES = 1024**4
+MAX_DOWNLOAD_BYTES = 100 * 1024**3
+
 
 def remote_path(value: str, root: str) -> str:
     if not value or "\\" in value or any(ord(c) < 32 or ord(c) == 127 for c in value):
@@ -75,7 +79,8 @@ class Settings(BaseModel):
     local_roots: list[Path] = Field(default_factory=list)
     log_encoding: Literal["utf-8", "utf-8-sig", "gb18030", "utf-16"] = "utf-8-sig"
     timezone_offset: str = Field(default="+08:00", pattern=r"^[+-](?:0\d|1[0-3]):[0-5]\d$")
-    max_download_bytes: int = Field(default=1024**3, ge=1, le=100 * 1024**3)
+    max_cache_bytes: int = Field(default=0, ge=0, le=MAX_CACHE_BYTES)
+    max_download_bytes: int = Field(default=1024**3, ge=1, le=MAX_DOWNLOAD_BYTES)
     max_files: int = Field(default=200, ge=1, le=2000)
     scan_max_bytes: int = Field(default=64 * 1024**2, ge=1, le=2 * 1024**3)
     scan_timeout_seconds: int = Field(default=20, ge=1, le=120)

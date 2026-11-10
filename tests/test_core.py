@@ -85,6 +85,23 @@ def test_pagination_json_unknown_time_and_invalid_range(service):
         )
 
 
+def test_short_dates_use_log_header_and_roll_across_new_year(service):
+    dataset = imported(
+        service,
+        "body contains a date 2031-01-01 02:00:00\n"
+        "12-31 23:59:59.500 ERROR request failed for date=2030-01-01 08:00:00\n"
+        "01-01 00:00:01.000 ERROR latest failure\n",
+        name="web-error-2027-01-01.0.log",
+    )
+    result = service.query.search(dataset["dataset_id"], start_time="2026-12-31T23:59:00+08:00")
+    assert result["unknown_time_lines_skipped"] == 1
+    assert [row["timestamp"] for row in result["matches"]] == [
+        "2026-12-31T23:59:59.500000+08:00", "2027-01-01T00:00:01+08:00",
+    ]
+    latest = service.query.latest_errors(dataset["dataset_id"])
+    assert [row["line"] for row in latest["errors"]] == [3, 2]
+
+
 def test_gzip_encoding_and_limits(service):
     path = service.settings.local_roots[0] / "app.log.gz"
     with gzip.open(path, "wb") as target:

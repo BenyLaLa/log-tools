@@ -11,7 +11,7 @@ import uuid
 from contextlib import contextmanager
 
 from .config import remote_path
-from .query import metadata, parse_time, redact
+from .query import metadata, parse_time, redact, time_reference
 from .store import now
 
 CHUNK = 64 * 1024
@@ -150,7 +150,8 @@ class Collector:
     def collect(self, server, config, paths=None, mode="tail", query="", start_time=None,
                 end_time=None, level=None, trace_id=None, before=20, after=60,
                 tail_bytes=8 * 1024**2, max_network_bytes=None, max_file_bytes=None,
-                max_output_bytes=None, timeout_seconds=None, limit=100, resume_dataset_id=None):
+                max_output_bytes=None, timeout_seconds=None, limit=100, resume_dataset_id=None,
+                *, lease_scope=None, cache_limit=0):
         if config.protocol != "sftp":
             raise ValueError("Fragment collection requires SFTP; FTP/FTPS full-download tools remain separate")
         options = {"network_bytes": max_network_bytes if max_network_bytes is not None else self.settings.fragment_network_bytes,
@@ -163,6 +164,8 @@ class Collector:
                          ("output_bytes", self.settings.fragment_output_bytes),
                          ("timeout_seconds", self.settings.fragment_timeout_seconds)):
             bounded(options[key], 1, cap, key)
+        if cache_limit:
+            options["output_bytes"] = min(options["output_bytes"], cache_limit)
         if resume_dataset_id:
             previous = self.store.read(resume_dataset_id)
             connection = {"host": config.host, "port": config.port, "username": config.username, "root": config.root}
@@ -217,14 +220,16 @@ class Collector:
         if start and end and start > end:
             raise ValueError("start_time must be before end_time")
         manifest, lease = self.store.new(server, "utf-8", reserve=True)
+        if lease_scope is not None:
+            lease_scope.callback(lease.close)
         manifest.update(kind="fragments", status="collecting", parent_dataset_id=resume_dataset_id,
                         connection={"host": config.host, "port": config.port, "username": config.username, "root": config.root})
         state = manifest["collection"] = {"parameters": parameters, "limits": options, "coverage": [],
                                            "remaining": [], "warnings": [], "incomplete": True}
         meter = Meter(options)
-        self.store.save(manifest)
         next_index = 0
         try:
+            self.store.save(manifest)
             with bounded_connection(self.connector, config, meter) as remote:
                 for index, task in enumerate(tasks):
                     if (meter.received >= options["network_bytes"] or meter.matches >= parameters["limit"]
@@ -247,9 +252,12 @@ class Collector:
                          incomplete=bool(state["warnings"] or state["remaining"]),
                          scope="Only explicit selected files/ranges were inspected; SFTP attributes are not an atomic snapshot")
             manifest.update(status="partial" if state["incomplete"] else "completed",
-                            bytes_downloaded=meter.received, bytes_saved=meter.saved, finished_at=now())
-            self.store.save(manifest)
-            lease.close()
+                            bytes_downloaded=meter.received, bytes_saved=meter.saved)
+            try:
+                self.store.finish(manifest)
+            finally:
+                if lease_scope is None:
+                    lease.close()
         return {"dataset_id": manifest["dataset_id"], "status": manifest["status"], "kind": "fragments",
                 "files": [{key: value for key, value in row.items() if key != "line_map"} for row in manifest["files"]], "collection": state,
                 "resume_dataset_id": manifest["dataset_id"] if state["remaining"] else None,
@@ -312,6 +320,7 @@ class Collector:
                         raise StopScan("utf16_bom_missing")
                     encoding = "utf-16-le" if head == b"\xff\xfe" else "utf-16-be"
                     lo = 2
+                reference = time_reference(path, self.settings.timezone_offset, mtime=initial["mtime"])
                 stamp = parse_time(task["initial_timestamp"], self.settings.timezone_offset) if task.get("initial_timestamp") else None
                 severity = task.get("initial_level")
                 unknown_time = 0
@@ -323,7 +332,7 @@ class Collector:
                 try:
                     for row in iterator:
                         meter.check()
-                        current_stamp, current_level = metadata(row["text"], self.settings.timezone_offset)
+                        current_stamp, current_level = metadata(row["text"], self.settings.timezone_offset, reference)
                         if current_stamp:
                             stamp, severity = current_stamp, current_level
                         elif current_level:

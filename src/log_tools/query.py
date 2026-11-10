@@ -4,15 +4,21 @@ import codecs
 import gzip
 import heapq
 import json
+import posixpath
 import re
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
+from functools import wraps
 
-TIMESTAMP = re.compile(
-    r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,6})?(?:Z|[+-]\d{2}:?\d{2})?"
-)
-LEVEL = re.compile(r"\b(TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL|CRITICAL)\b", re.I)
+LEVELS = "TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL|CRITICAL"
+LEVEL = re.compile(rf"\b({LEVELS})\b", re.I)
+CLOCK = r"[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,6})?(?:Z|[+-]\d{2}:?\d{2})?"
+DATE = r"\d{4}-\d{2}-\d{2}"
+TIMESTAMP = re.compile(DATE + CLOCK)
+HEADER_TIME = re.compile(rf"^\s*(?:\[?(?:{LEVELS})\]?\s+)?\[?"
+                         rf"(?P<time>(?:\d{{4}}-)?\d{{2}}-\d{{2}}{CLOCK})(?=$|[\s\[\]|,;])", re.I)
+FILENAME_DATE = re.compile(rf"(?<!\d){DATE}(?!\d)")
 SECRETS = re.compile(
     r"""(?i)(["']?(?:password|passwd|token|access_token|refresh_token|api_key|secret)["']?\s*[:=]\s*["']?)([^\s,"';}]+)"""
 )
@@ -34,7 +40,25 @@ def parse_time(value, offset):
     return stamp
 
 
-def metadata(line, offset):
+def time_reference(filename, offset, *, modified_at=None, mtime=None):
+    """Use a dated filename first, then a source modification time in the log timezone."""
+    if match := FILENAME_DATE.search(posixpath.basename(filename.replace("\\", "/"))):
+        try:
+            return parse_time(match.group() + "T00:00:00", offset)
+        except ValueError:
+            pass
+    try:
+        local_zone = parse_time("2000-01-01T00:00:00", offset).tzinfo
+        if modified_at:
+            return parse_time(modified_at, offset).astimezone(local_zone)
+        if mtime is not None:
+            return datetime.fromtimestamp(mtime, tz=timezone.utc).astimezone(local_zone)
+    except (ValueError, TypeError, OverflowError, OSError):
+        pass
+    return None
+
+
+def metadata(line, offset, reference=None):
     raw_time = None
     level = None
     if line.lstrip().startswith("{"):
@@ -45,14 +69,28 @@ def metadata(line, offset):
                 level = obj.get("level") or obj.get("severity") or obj.get("log_level")
         except ValueError:
             pass
-    if not raw_time and (match := TIMESTAMP.search(line)):
-        raw_time = match.group()
+    short = None
+    if not raw_time and (match := HEADER_TIME.match(line)):
+        value = match["time"]
+        if value[4] == "-":
+            raw_time = value
+        else:
+            short = value
     stamp = None
     if raw_time:
         try:
             stamp = parse_time(raw_time, offset)
         except ValueError:
             pass
+    if short and reference is not None:
+        candidates = []
+        for year in (reference.year, reference.year - 1, reference.year + 1):
+            try:
+                candidates.append(parse_time(f"{year:04d}-{short}", offset))
+            except ValueError:
+                continue
+        if candidates:
+            stamp = min(candidates, key=lambda value: abs(value - reference))
     if not level and (match := LEVEL.search(line)):
         level = match.group()
     level = str(level).upper() if level else None
@@ -105,6 +143,14 @@ def lines(path, compressed, encoding, budget):
                 break
 
 
+def keep_dataset(method):
+    @wraps(method)
+    def run(self, dataset_id, *args, **kwargs):
+        with self.store.reading(dataset_id):
+            return method(self, dataset_id, *args, **kwargs)
+    return run
+
+
 class Query:
     def __init__(self, settings, store):
         self.settings, self.store = settings, store
@@ -119,13 +165,17 @@ class Query:
             if not files:
                 raise ValueError("File ID does not belong to this dataset")
         for file in files:
+            reference = time_reference(
+                file.get("remote_path") or file["name"], self.settings.timezone_offset,
+                modified_at=file.get("modified_at"), mtime=file.get("source_version", {}).get("mtime"),
+            )
             stamp = parse_time(file["initial_timestamp"], self.settings.timezone_offset) if file.get("initial_timestamp") else None
             level = file.get("initial_level")
             path = self.store.file_path(dataset_id, file["file_id"])
             for number, text in enumerate(
                 lines(path, file["compressed"], manifest["encoding"], budget), 1
             ):
-                current_stamp, current_level = metadata(text, self.settings.timezone_offset)
+                current_stamp, current_level = metadata(text, self.settings.timezone_offset, reference)
                 # A new event clears inherited severity; stack lines inherit preceding event metadata.
                 if current_stamp is not None:
                     stamp, level = current_stamp, current_level
@@ -146,6 +196,8 @@ class Query:
                     "level": level,
                     "text": text,
                     "_stamp": stamp,
+                    "_event_stamp": current_stamp,
+                    "_event_level": current_level,
                     "_event_start": bool(current_stamp or current_level),
                 }
 
@@ -165,6 +217,7 @@ class Query:
             return warnings
         return []
 
+    @keep_dataset
     def search(
         self,
         dataset_id,
@@ -225,6 +278,7 @@ class Query:
             "unknown_time_lines_skipped": unknown_times,
         }
 
+    @keep_dataset
     def context(self, dataset_id, file_id, line, before=10, after=20):
         if line < 1 or not 0 <= before <= 50 or not 0 <= after <= 50:
             raise ValueError("line must be positive; before/after must be 0..50")
@@ -247,6 +301,7 @@ class Query:
             "warnings": warnings,
         }
 
+    @keep_dataset
     def latest_errors(self, dataset_id, limit=5):
         """Find event headers by event time, without treating stack lines as new errors."""
         if not 1 <= limit <= 20:
@@ -256,15 +311,14 @@ class Query:
         events = undated = 0
         try:
             for sequence, record in enumerate(self.records(dataset_id, budget)):
-                stamp, severity = metadata(record["text"], self.settings.timezone_offset)
+                stamp, severity = record["_event_stamp"], record["_event_level"]
                 if severity not in ("ERROR", "FATAL", "CRITICAL"):
                     continue
-                # Untimestamped plain-text headers must start with the level. Arbitrary
-                # occurrences of ERROR inside a stack/message are not event headers.
-                standalone = re.match(r"^\s*\[?(ERROR|FATAL|CRITICAL)\b", record["text"], re.I)
-                structured = record["text"].lstrip().startswith("{")
-                if stamp is None and not (standalone or structured):
-                    continue
+                if stamp is None:
+                    text = record["text"]
+                    if not (HEADER_TIME.match(text) or text.lstrip().startswith("{")
+                            or re.match(r"^\s*\[?(ERROR|FATAL|CRITICAL)\b", text, re.I)):
+                        continue
                 events += 1
                 undated += int(stamp is None)
                 record["timestamp"] = stamp.isoformat() if stamp else None
@@ -295,6 +349,7 @@ class Query:
             "scope": "Only the saved dataset files/fragments were inspected; this is not necessarily the full remote source",
         }
 
+    @keep_dataset
     def summary(self, dataset_id):
         budget = Budget(self.settings.scan_max_bytes, self.settings.scan_timeout_seconds)
         groups, warnings = {}, self.scope_warnings(dataset_id)
@@ -309,7 +364,7 @@ class Query:
                     continue
                 total += 1
                 sample = self.public(record)
-                key = TIMESTAMP.sub("<time>", sample["text"])
+                key = HEADER_TIME.sub("<time>", sample["text"], count=1)
                 key = re.sub(r"\b\d+\b", "<n>", key)
                 if key not in groups:
                     if len(groups) >= 1000:

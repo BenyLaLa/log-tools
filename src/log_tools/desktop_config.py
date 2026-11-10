@@ -12,11 +12,12 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from . import __version__
 from .config import DiscoverySettings, Settings, load_settings, remote_path
 from .deployment import validate_alias, write_json
 from .leases import Lease
 
-VERSION = "0.2.4"
+VERSION = __version__
 
 
 def application_home():
@@ -181,6 +182,13 @@ class DesktopSettings:
             original = self.path.read_bytes()
             document = json.loads(original)
             document["cache_dir"] = str(path)
+            self.save(document, original)
+
+    def set_storage_limits(self, max_cache_bytes, max_download_bytes):
+        with self.lock():
+            original = self.path.read_bytes()
+            document = json.loads(original)
+            document.update(max_cache_bytes=max_cache_bytes, max_download_bytes=max_download_bytes)
             self.save(document, original)
 
 

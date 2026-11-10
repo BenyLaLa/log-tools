@@ -38,7 +38,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .config import DiscoverySettings, ServerConfig, load_settings
+from .config import (
+    MAX_CACHE_BYTES,
+    MAX_DOWNLOAD_BYTES,
+    MIB,
+    DiscoverySettings,
+    ServerConfig,
+    load_settings,
+)
 from .credentials import write_credential
 from .desktop_config import (
     VERSION,
@@ -95,15 +102,7 @@ def preview_logs(config_path, alias):
     from .service import LogService
     service = LogService(load_settings(config_path))
     try:
-        result = service.list_remote(alias, limit=1000)
-        files = list(result["files"])
-        cursor = result["next_cursor"]
-        while cursor:
-            page = service.list_remote(alias, limit=1000, cursor=cursor)
-            files.extend(page["files"])
-            cursor = page["next_cursor"]
-        return {**result, "files": files, "has_more": False, "next_cursor": None,
-                "truncated": result["incomplete"], "preview": True}
+        return {**service.list_remote(alias, all_files=True), "preview": True}
     finally:
         service.close()
 
@@ -300,9 +299,19 @@ class Window(QMainWindow):
         row.addWidget(self.cache)
         row.addWidget(self.button("更改", self.choose_cache))
         layout.addRow("下载缓存", row)
-        note = QLabel("升级只更新程序。服务器配置、凭据和下载数据会保留。\n更改缓存目录不会搬迁或删除旧日志；运行中的客户端需重启后使用新目录。\n卸载默认保留用户数据，清理日志请在确认不再需要后自行操作。")
+        self.cache_limit = QSpinBox()
+        self.cache_limit.setRange(0, MAX_CACHE_BYTES // MIB)
+        self.cache_limit.setSpecialValueText("不限")
+        self.cache_limit.setSuffix(" MiB")
+        layout.addRow("日志缓存上限", self.cache_limit)
+        self.download_limit = QSpinBox()
+        self.download_limit.setRange(1, MAX_DOWNLOAD_BYTES // MIB)
+        self.download_limit.setSuffix(" MiB")
+        layout.addRow("单次完整下载上限", self.download_limit)
+        note = QLabel("缓存计入日志文件、片段、导入副本和对应清单。超限时从最早的数据集开始清理，正在下载或查询的数据会等到任务结束。\n单次完整下载按本次全部文件合计；片段检索的网络读取量由片段预算控制。\n更改缓存目录后，运行中的 MCP 客户端需重启才能使用新目录。")
         note.setWordWrap(True)
         layout.addRow(note)
+        layout.addRow(self.button("保存上限并检查缓存", self.save_storage_limits, True))
         self.tabs.addTab(page, "3  安装与数据")
 
     def make_fragments(self):
@@ -339,10 +348,17 @@ class Window(QMainWindow):
             widget.setValue(value)
             return widget
         self.fragment_tail = spin(1, 32, 8)
-        self.fragment_network = spin(1, 2048, 64)
-        self.fragment_file = spin(1, 2048, 32)
-        self.fragment_save = spin(1, 16, 2)
-        self.fragment_seconds = spin(1, 120, 30)
+        settings = load_settings(self.settings.path)
+        def budget_spin(cap, unit=1):
+            displayed_cap = (cap + unit - 1) // unit
+            widget = spin(1, displayed_cap, displayed_cap)
+            if unit == MIB:
+                widget.setToolTip(f"配置上限为 {cap} 字节，实际读取不会超过此值。")
+            return widget
+        self.fragment_network = budget_spin(settings.fragment_network_bytes, MIB)
+        self.fragment_file = budget_spin(settings.fragment_file_bytes, MIB)
+        self.fragment_save = budget_spin(settings.fragment_output_bytes, MIB)
+        self.fragment_seconds = budget_spin(settings.fragment_timeout_seconds)
         self.fragment_before = spin(0, 50, 20)
         self.fragment_after = spin(0, 100, 60)
         for name, widget in (("尾部窗口（MiB）", self.fragment_tail), ("本次网络上限（MiB）", self.fragment_network),
@@ -391,10 +407,11 @@ class Window(QMainWindow):
         alias = self.fragment_server.currentText()
         if not alias:
             raise ValueError("请先保存一个 SFTP 项目。")
-        arguments = {"max_network_bytes": self.fragment_network.value() * 1024**2,
-                     "max_file_bytes": self.fragment_file.value() * 1024**2,
-                     "max_output_bytes": self.fragment_save.value() * 1024**2,
-                     "timeout_seconds": self.fragment_seconds.value()}
+        settings = load_settings(self.settings.path)
+        arguments = {"max_network_bytes": min(self.fragment_network.value() * MIB, settings.fragment_network_bytes),
+                     "max_file_bytes": min(self.fragment_file.value() * MIB, settings.fragment_file_bytes),
+                     "max_output_bytes": min(self.fragment_save.value() * MIB, settings.fragment_output_bytes),
+                     "timeout_seconds": min(self.fragment_seconds.value(), settings.fragment_timeout_seconds)}
         if resume:
             if not self.last_fragment_result or self.last_fragment_alias != alias or not self.last_fragment_result.get("resume_dataset_id"):
                 raise ValueError("当前项目没有可继续的扫描；请查看结果中的遗漏/压缩日志提示。")
@@ -407,7 +424,6 @@ class Window(QMainWindow):
                 raise ValueError("请勾选 1–200 个候选日志；历史查询请按文件名选择目标日期。")
             start, end = self.fragment_start.text().strip() or None, self.fragment_end.text().strip() or None
             from .query import parse_time
-            settings = load_settings(self.settings.path)
             times = [parse_time(value, settings.timezone_offset) if value else None for value in (start, end)]
             if times[0] and times[1] and times[0] > times[1]:
                 raise ValueError("开始时间不能晚于结束时间。")
@@ -423,7 +439,7 @@ class Window(QMainWindow):
         alias, arguments = self.fragment_arguments(resume)
         def run():
             from .service import LogService
-            service = LogService(load_settings(self.settings.path))
+            service = LogService(load_settings(self.settings.path), config_path=self.settings.path)
             try:
                 return {**service.collect_fragments(alias, **arguments), "fragment_collection": True, "server": alias}
             finally:
@@ -451,7 +467,11 @@ class Window(QMainWindow):
             if alias == selected_alias:
                 selected_row = row
         self.table.blockSignals(False)
-        self.cache.setText(str(load_settings(self.settings.path).cache_dir))
+        storage = load_settings(self.settings.path)
+        self.cache.setText(str(storage.cache_dir))
+        self.loaded_storage_limits = (storage.max_cache_bytes, storage.max_download_bytes)
+        for widget, value in zip((self.cache_limit, self.download_limit), self.loaded_storage_limits, strict=True):
+            widget.setValue((value + MIB - 1) // MIB)
         if self.table.rowCount():
             self.table.selectRow(selected_row)
         else:
@@ -645,7 +665,12 @@ class Window(QMainWindow):
             self.last_fragment_result, self.last_fragment_alias = result, result["server"]
             self.fragment_result.setPlainText(json.dumps(result, ensure_ascii=False, indent=2))
             state = result["collection"]
-            self.status.setText(f"片段已保存：网络读取 {state['network_bytes']} 字节，本地保存 {state['saved_bytes']} 字节。" + ("扫描未完整覆盖，请查看提示或继续扫描。" if state['incomplete'] else "已完成本次选定范围。"))
+            if result["status"] == "failed" and {"reason": "dataset_exceeds_cache_limit"} in state["warnings"]:
+                self.status.setText("本次数据集连同清单超过缓存上限。可提高缓存上限或缩小查询范围后重试。")
+            elif result.get("cache_retained") is False:
+                self.status.setText("本次片段已达到缓存清理条件。仍可查看结果预览，继续检索时请重新采集。")
+            else:
+                self.status.setText(f"片段已保存：网络读取 {state['network_bytes']} 字节，本地保存 {state['saved_bytes']} 字节。" + ("扫描未完整覆盖，请查看提示或继续扫描。" if state['incomplete'] else "已完成本次选定范围。"))
             return
         if isinstance(result, dict) and result.get("preview"):
             self.show_preview(result)
@@ -718,6 +743,38 @@ class Window(QMainWindow):
             self.settings.set_cache(path)
             self.cache.setText(path)
             self.status.setText("已更新缓存位置，旧日志未搬迁或删除。请重启 MCP 客户端。")
+
+    def save_storage_limits(self):
+        if self.worker and self.worker.isRunning():
+            raise ValueError("当前操作尚未结束，请稍候。")
+        values = []
+        for widget, previous in zip((self.cache_limit, self.download_limit), self.loaded_storage_limits, strict=True):
+            # Preserve an exact byte value configured outside the UI if the field was untouched.
+            value = widget.value()
+            values.append(previous if value == (previous + MIB - 1) // MIB else value * MIB)
+        self.settings.set_storage_limits(*values)
+        self.loaded_storage_limits = tuple(values)
+
+        def cleanup():
+            from .store import Store
+            config_path = self.settings.path
+            root = load_settings(config_path).cache_dir
+
+            def limit():
+                current = load_settings(config_path)
+                return current.max_cache_bytes if current.cache_dir == root else 0
+
+            try:
+                result = Store(root, limit).prune()
+            except (OSError, ValueError):
+                return "上限已保存，缓存检查暂未完成。请检查缓存目录后重试。"
+            message = f"上限已保存。已清理 {len(result['deleted'])} 个旧数据集。"
+            if result["pending"]:
+                message += "部分数据正在使用或暂无法删除，后续会重试。"
+            return message
+
+        self.background(cleanup)
+        self.status.setText("上限已保存，正在检查本地缓存……")
 
     def export_client(self):
         path, _ = QFileDialog.getSaveFileName(self, "导出客户端配置", "mcp-client.local.json", "JSON (*.json)")

@@ -10,8 +10,8 @@ from mcp.types import ToolAnnotations
 from .service import LogService
 
 
-def build_server(settings):
-    service = LogService(settings)
+def build_server(settings, *, config_path=None):
+    service = LogService(settings, config_path=config_path)
 
     @asynccontextmanager
     async def lifespan(server):
@@ -43,7 +43,7 @@ def build_server(settings):
         ),
     )
     read = ToolAnnotations(readOnlyHint=True, destructiveHint=False)
-    write = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False)
+    write = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False)
 
     async def call(method, *args, **kwargs):
         try:
@@ -101,6 +101,7 @@ def build_server(settings):
         Resumes overlap context and may duplicate evidence. gzip only streams in history/full;
         an interrupted gzip file requires restart, not arbitrary decompressed seeking.
         Response includes coverage, warnings, source positions, local dataset and bounded preview.
+        The configured local cache limit may evict older datasets.
         Time filtering still reads content. Metadata is not an atomic source snapshot.
         """
         return await call(service.collect_fragments, server, paths=paths, mode=mode, query=query,
@@ -114,7 +115,10 @@ def build_server(settings):
     async def download_logs(
         server: str, paths: list[str], max_bytes: int | None = None
     ) -> dict[str, Any]:
-        """Start a background download of explicit remote paths. Returns job_id/dataset_id; poll status."""
+        """Download explicit paths in the background, subject to a per-job total size limit.
+
+        Returns job_id/dataset_id; poll status. Cache retention may evict older datasets.
+        """
         return await call(service.download, server, paths, max_bytes)
 
     @mcp.tool(annotations=read, structured_output=True)
@@ -129,7 +133,7 @@ def build_server(settings):
 
     @mcp.tool(annotations=write, structured_output=True)
     async def import_local_logs(paths: list[str]) -> dict[str, Any]:
-        """Copy existing local logs from configured local_roots into a query dataset. Absolute paths only."""
+        """Copy local logs from local_roots into the cache. Absolute paths only; cache limits apply."""
         return await call(service.import_local, paths)
 
     @mcp.tool(annotations=read, structured_output=True)

@@ -6,9 +6,10 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from pathlib import Path
 
-from .config import remote_path
+from .config import load_settings, remote_path
 from .discovery import Discovery
 from .fragments import Collector
 from .query import Query
@@ -17,9 +18,10 @@ from .store import Store, now
 
 
 class LogService:
-    def __init__(self, settings, connector=connect):
+    def __init__(self, settings, connector=connect, *, config_path=None):
         self.settings = settings
-        self.store = Store(settings.cache_dir)
+        self.config_path = config_path
+        self.store = Store(settings.cache_dir, lambda: self.storage_settings().max_cache_bytes)
         self.query = Query(settings, self.store)
         self.connector = connector
         self.discovery = Discovery()
@@ -27,9 +29,19 @@ class LogService:
         self.collection_slots = threading.BoundedSemaphore(2)
         self.pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="log-download")
         self.jobs = {}
-        self.imports = set()
         self.lock = threading.RLock()
         self.stopping = threading.Event()
+        self.store.prune()
+
+    def storage_settings(self):
+        if self.config_path is not None:
+            try:
+                current = load_settings(self.config_path)
+                if current.cache_dir == self.settings.cache_dir:
+                    return current
+            except (OSError, ValueError):
+                pass
+        return self.settings
 
     def close(self):
         self.stopping.set()
@@ -49,35 +61,48 @@ class LogService:
         }
 
     def list_remote(self, server, directory=".", pattern=None, limit=100,
-                    recursive=None, max_depth=None, cursor=None):
+                    recursive=None, max_depth=None, cursor=None, *, all_files=False):
         return self.discovery.list(self.connector, self.server(server), server,
-                                   directory, pattern, limit, recursive, max_depth, cursor)
+                                   directory, pattern, limit, recursive, max_depth, cursor,
+                                   all_files=all_files)
 
     def collect_fragments(self, server, **arguments):
         if not self.collection_slots.acquire(blocking=False):
             raise ValueError("Two fragment scans are already running; wait for one to finish")
         try:
-            result = self.collector.collect(server, self.server(server), **arguments)
-            parameters = result["collection"]["parameters"]
-            result["preview"] = self.query.search(result["dataset_id"],
-                **{key: parameters[key] for key in ("query", "start_time", "end_time", "level", "trace_id")}, limit=10)
-            if not result["preview"]["matches"] and result["files"]:
-                result["preview"] = self.query.search(result["dataset_id"], limit=10)
-                result["preview_note"] = "Original filter may no longer match redacted text; showing saved context"
-            result["preview"]["contexts"] = [self.query.context(result["dataset_id"], row["file_id"], row["line"], 3, 10)
-                                             for row in result["preview"]["matches"][:3]]
-            return result
+            with ExitStack() as leases:
+                result = self.collector.collect(
+                    server, self.server(server), **arguments, lease_scope=leases,
+                    cache_limit=self.storage_settings().max_cache_bytes,
+                )
+                parameters = result["collection"]["parameters"]
+                result["preview"] = self.query.search(result["dataset_id"],
+                    **{key: parameters[key] for key in ("query", "start_time", "end_time", "level", "trace_id")}, limit=10)
+                if not result["preview"]["matches"] and result["files"]:
+                    result["preview"] = self.query.search(result["dataset_id"], limit=10)
+                    result["preview_note"] = "Original filter may no longer match redacted text; showing saved context"
+                result["preview"]["contexts"] = [self.query.context(result["dataset_id"], row["file_id"], row["line"], 3, 10)
+                                                 for row in result["preview"]["matches"][:3]]
         finally:
-            self.collection_slots.release()
+            try:
+                self.store.prune()
+            finally:
+                self.collection_slots.release()
+        if result["status"] == "failed" or not (self.store.directory(result["dataset_id"]) / "manifest.json").exists():
+            result.update(cache_retained=False, resume_dataset_id=None, local_directory=None)
+        return result
 
     def download(self, server, paths, max_bytes=None):
         config = self.server(server)
         if not paths or len(paths) > self.settings.max_files:
             raise ValueError(f"Choose 1..{self.settings.max_files} files")
         paths = list(dict.fromkeys(remote_path(path, config.root) for path in paths))
-        cap = self.settings.max_download_bytes if max_bytes is None else max_bytes
-        if not 1 <= cap <= self.settings.max_download_bytes:
+        storage = self.storage_settings()
+        cap = storage.max_download_bytes if max_bytes is None else max_bytes
+        if not 1 <= cap <= storage.max_download_bytes:
             raise ValueError("max_bytes exceeds configured download limit")
+        if storage.max_cache_bytes:
+            cap = min(cap, storage.max_cache_bytes)
         with self.lock:
             self.jobs = {key: future for key, future in self.jobs.items() if not future.done()}
             if sum(not future.done() for future in self.jobs.values()) >= 4:
@@ -86,7 +111,11 @@ class LogService:
             job_id = manifest["dataset_id"]
             try:
                 future = self.pool.submit(self._download, manifest, config, paths, cap)
-                future.add_done_callback(lambda _: lease.close())
+                def release(_):
+                    lease.close()
+                    self.store.prune()
+
+                future.add_done_callback(release)
                 self.jobs[job_id] = future
             except BaseException:
                 lease.close()
@@ -175,17 +204,21 @@ class LogService:
             manifest["status"] = "partial" if manifest["files"] else "failed"
             manifest["errors"].append({"reason": type(error).__name__})
         finally:
-            manifest["finished_at"] = now()
-            self.store.save(manifest)
+            self.store.finish(manifest)
+        return manifest if manifest.get("cache_rejected") else None
 
     def status(self, job_id):
-        manifest = self.store.read(job_id)
         with self.lock:
             future = self.jobs.get(job_id)
-            importing = job_id in self.imports
+        try:
+            manifest = self.store.read(job_id)
+        except FileNotFoundError:
+            if future and future.done() and not future.cancelled() and future.exception() is None:
+                if rejected := future.result():
+                    return rejected
+            raise
         if (
-            not importing
-            and manifest["status"] in ("queued", "downloading", "collecting")
+            manifest["status"] in ("queued", "downloading", "collecting")
             and (future is None or future.done())
         ):
             # A different MCP process may own this job. Only recover it after its
@@ -210,9 +243,14 @@ class LogService:
         if not 1 <= limit <= 200:
             raise ValueError("limit must be 1..200")
         rows = self.store.list()
+        available = []
         for row in rows[:limit]:
-            row["status"] = self.status(row["dataset_id"])["status"]
-        return {"datasets": rows[:limit], "truncated": len(rows) > limit}
+            try:
+                row["status"] = self.status(row["dataset_id"])["status"]
+            except FileNotFoundError:
+                continue  # A concurrent cleanup evicted this snapshot.
+            available.append(row)
+        return {"datasets": available, "truncated": len(rows) > limit}
 
     def import_local(self, paths):
         """Copy allowlisted local files into an immutable query dataset."""
@@ -230,11 +268,11 @@ class LogService:
                 raise ValueError("Only regular files may be imported")
             total += path.stat().st_size
             selected.append(path)
-        if total > self.settings.max_download_bytes:
+        storage = self.storage_settings()
+        cap = min(storage.max_download_bytes, storage.max_cache_bytes or storage.max_download_bytes)
+        if total > cap:
             raise ValueError("Import size exceeds configured download limit")
-        with self.lock:
-            manifest, lease = self.store.new("local-import", self.settings.log_encoding, reserve=True)
-            self.imports.add(manifest["dataset_id"])
+        manifest, lease = self.store.new("local-import", self.settings.log_encoding, reserve=True)
         manifest["status"] = "downloading"
         try:
             for source in selected:
@@ -246,10 +284,7 @@ class LogService:
                 try:
                     with source.open("rb") as reader, destination.open("xb") as writer:
                         while block := reader.read(64 * 1024):
-                            if (
-                                manifest["bytes_downloaded"] + len(block)
-                                > self.settings.max_download_bytes
-                            ):
+                            if manifest["bytes_downloaded"] + len(block) > cap:
                                 raise ValueError("Import size exceeds configured download limit")
                             writer.write(block)
                             digest.update(block)
@@ -269,6 +304,7 @@ class LogService:
                         "sha256": digest.hexdigest(),
                         "compressed": source.name.lower().endswith(".gz"),
                         "downloaded_at": now(),
+                        "modified_at": modification_time(initial.st_mtime),
                     }
                 )
             manifest["status"] = "completed"
@@ -277,11 +313,11 @@ class LogService:
             manifest["errors"].append({"reason": "local_import_failed"})
             raise
         finally:
-            manifest["finished_at"] = now()
             try:
-                self.store.save(manifest)
+                self.store.finish(manifest)
             finally:
                 lease.close()
-                with self.lock:
-                    self.imports.discard(manifest["dataset_id"])
+                self.store.prune()
+        if manifest.get("cache_rejected"):
+            raise ValueError("Imported dataset exceeds the cache limit including its manifest")
         return manifest

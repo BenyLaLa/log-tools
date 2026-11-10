@@ -45,7 +45,7 @@ def main():
     else:
         from .server import build_server
 
-        build_server(settings).run(transport="stdio")
+        build_server(settings, config_path=Path(args.config).resolve()).run(transport="stdio")
 
 
 if __name__ == "__main__":

@@ -38,6 +38,8 @@ def test_package_allowlist_excludes_real_data_and_credentials(tmp_path):
     with zipfile.ZipFile(archive) as bundle:
         assert len(bundle.namelist()) == len(deployment.PACKAGE_FILES) + 2
         assert "log-tools/examples/logs/order.log" in bundle.namelist()
+        for license_file in ("GPL-3.0-only.txt", "LGPL-3.0-only.txt", "README.txt"):
+            assert "log-tools/packaging/licenses/" + license_file in bundle.namelist()
         assert all(b"SENSITIVE_SENTINEL" not in bundle.read(n) for n in bundle.namelist())
         for item in manifest["files"]:
             data = bundle.read("log-tools/" + item["path"])

@@ -48,6 +48,29 @@ def fill(view, alias="first"):
     view.root.setText("/project")
 
 
+def test_gui_storage_limits_apply_to_current_cache(window):
+    from uuid import uuid4
+
+    from PySide6.QtWidgets import QApplication
+
+    from log_tools.config import MIB, load_settings
+    from log_tools.store import Store
+
+    view, _ = window
+    store = Store(load_settings(view.settings.path).cache_dir)
+    old = store.new("test", "utf-8")
+    store.file_path(old["dataset_id"], str(uuid4())).write_bytes(b"x" * (MIB + 1))
+    view.cache_limit.setValue(1)
+    view.download_limit.setValue(20)
+    view.save_storage_limits()
+    assert view.worker.wait(5000)
+    QApplication.processEvents()
+    assert not store.directory(old["dataset_id"]).exists()
+    assert "已清理 1 个旧数据集" in view.status.text()
+    assert view.settings.read()["max_cache_bytes"] == MIB
+    assert view.settings.read()["max_download_bytes"] == 20 * MIB
+
+
 def test_gui_discovery_settings_save_reload_and_preview(window):
     view, writes = window
     fill(view)

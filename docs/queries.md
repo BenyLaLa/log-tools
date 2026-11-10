@@ -23,7 +23,17 @@ cd D:\project\company\log-tools
 
 ## 2. 查最新报错
 
-从默认目录选取名称匹配 `*error*.log*` 的文件，下载后查询：
+SFTP 先列出当前日志，再选择清单中的错误日志路径并扫描尾部。使用返回的数据集 ID 查询已保存片段中的最新事件。
+
+```powershell
+.\query.cmd files --server dev-sdscm --no-recursive
+.\query.cmd collect --server dev-sdscm --mode tail --level ERROR log_error.log
+.\query.cmd latest --dataset "数据集ID"
+```
+
+检查片段结果的 `coverage`、`warnings` 和续扫 ID。按历史时段调查时，可选择目标日期及分卷并使用 `--mode history`。详见 [片段检索](fragments.md)。
+
+需要完整文件快照时，用 `latest --server` 下载名称匹配 `*error*.log*` 的候选文件再查询。
 
 ```powershell
 .\query.cmd latest --server dev-sdscm
@@ -39,7 +49,7 @@ cd D:\project\company\log-tools
 
 `latest_errors` 对所选数据集做一次有预算的扫描，按日志事件时间倒序排序，包含 ERROR/FATAL/CRITICAL，不将异常堆栈尾行当作新事件。返回最新 N 条、前后文、文件 ID、行号和数据集 ID。没有独立时间戳的错误无法准确排序，扫描超限、部分数据集等情况会明确返回 `warnings` / `incomplete`，不能宣称已确定最新一条。
 
-这只是**所选文件下载快照**中的最新错误，不是对服务器全部目录的实时监控，也不是自动根因结论。默认上下文为前 3 行、后 30 行，最大各 50 行；更长堆栈可继续用 `context` 读取。
+最新错误的范围取决于所选数据集和实际扫描预算。默认上下文为前 3 行、后 30 行，最大各 50 行；可继续用 `context` 读取更长的堆栈。
 
 ## 3. 重用已经下载的日志
 
@@ -109,14 +119,14 @@ cd D:\project\company\log-tools
 
 已直接接入 MCP 的 AI 可以调用 `latest_errors` 和现有其他工具；通过命令行连接的 AI 则使用同一个 `query.cmd` 入口即可。标准流程为：
 
-1. `latest --server` 定位最新事件，取得数据集 ID 和证据行。
-2. 根据需要 `fetch` 同时段的 INFO/DEBUG 日志。
+1. SFTP 用 `files` 选择候选文件并用 `collect` 筛选，取得数据集 ID 和证据位置。
+2. 根据需要扩大到同时段的 INFO/DEBUG 日志。需要完整快照时显式使用 `fetch`。
 3. `search` 按时间、线程关键字、traceId 或单据号关联。
 4. `context` 补全异常堆栈和业务步骤。
 5. 区分日志直接证明的原因与待验证推测；只有需要交付时才另存结果。
 
 
-## 历史日志发现（0.2.3）
+## 历史日志发现
 
 `files` 默认使用项目扫描设置，自动发现当前及历史日志，并在同一次命令会话中取完所有分页。`--limit` 是每页大小，不再限制最终输出总数。查看 `incomplete` 和 `warnings` 判断是否有漏扫；按配置排除的目录不会下载。
 
@@ -128,8 +138,3 @@ cd D:\project\company\log-tools
 ```
 
 `latest --server` 为控制下载量，默认只查指定目录的当前日志；加 `--recursive` 才包含历史子目录。它会拒绝对未完整扫描的结果或超过 `--max-files` 的候选集合声称找到了最新异常。先用 `files` 检查范围，再按目录或文件名缩小候选；文件名时间不是日志事件时间。MCP 工具本身默认按项目设置发现历史。
-
-
-## SFTP 片段采集（0.2.4）
-
-推荐使用 collect_log_fragments 或 query.cmd collect 先筛选再保存上下文。先 files 定位日期文件，再 collect --mode tail/history/full；可用 --resume DATASET_ID 继续。完整参数和来源引用规则见 [片段检索](fragments.md)。旧 fetch/latest --server 仍会完整下载，不能代替新模式。
